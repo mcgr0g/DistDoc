@@ -1,0 +1,295 @@
+plugins {
+    id 'java'
+    id 'java-test-fixtures'
+    id 'com.gradleup.shadow' version '8.3.6'
+}
+
+def trinoVer = (findProperty('trinoVersion') ?: System.getenv('TRINO_VERSION')) as String
+def distdocVer = (findProperty('distdocVersion') ?: System.getenv('DISTDOC_VERSION')) as String
+if (trinoVer == null || trinoVer.isEmpty()) {
+    throw new GradleException("trinoVersion не задан — задай в gradle.properties (или export TRINO_VERSION=<X.Y.Z>)")
+}
+if (distdocVer == null || distdocVer.isEmpty()) {
+    throw new GradleException("distdocVersion не задан — задай в gradle.properties (или export DISTDOC_VERSION=<X.Y.Z>)")
+}
+group = 'io.github.mcgr0g.distdoc'
+version = distdocVer
+
+
+configurations {
+    // Регистрируем группу для скачивания хост-утилит
+    trinoCli
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }
+}
+
+dependencies {
+    // --- Продакшен ---
+    // Используем compileOnly  потому что в trino все библиотеки уже есть.
+    compileOnly "io.trino:trino-spi:${trinoVer}"
+    compileOnly "io.airlift:slice:2.2"
+
+    // Но каждый плагин Trino загружается в своем изолированном контексте (Isolated ClassLoader).
+    // Trino скрывает серверную Guava от плагинов, чтобы избежать конфликтов версий
+    implementation "com.google.guava:guava:33.4.0-jre"
+    implementation "com.fasterxml.jackson.core:jackson-databind:2.18.2"
+    // Парсинг app-config.toml (конфиг плагина: секции [app], [trace])
+    implementation 'org.tomlj:tomlj:1.1.1'
+
+    // --- Зависимости для генератора (тестовых фикстур) ---
+    testFixturesImplementation 'net.datafaker:datafaker:2.2.2'
+    testFixturesImplementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+    testFixturesImplementation 'com.google.guava:guava:33.4.0-jre'
+    testFixturesImplementation "io.trino:trino-jdbc:${trinoVer}"
+    testFixturesImplementation 'org.tomlj:tomlj:1.1.1'
+
+    // --- Зависимости для Unit-тестов ---
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter-api'
+    // Slice доступен в main только как compileOnly (в Trino он уже есть);
+    // в тестах нужен для сборки аргумента trace(...) через Slices.utf8Slice
+    testImplementation "io.airlift:slice:2.2"
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation testFixtures(project(':'))
+    // Валидация выхода UDAF против канонического json-schema (Draft 2020-12) в тестах
+    testImplementation 'com.networknt:json-schema-validator:1.5.6'
+
+    // -- Зависимости для хост-утилит
+    add("trinoCli", "io.trino:trino-cli:${trinoVer}@jar")
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all']
+}
+test {
+    useJUnitPlatform()
+}
+
+// =========================================================================
+// E2E SOURCE SET (изоляция classpath от unit-тестов)
+// =========================================================================
+sourceSets {
+    test {
+        // Канонический контракт лежит в docs/contracts/ — тест читает его как ресурс, без копий
+        resources {
+            srcDir 'docs/contracts'
+        }
+    }
+    e2e {
+        compileClasspath += sourceSets.main.output + sourceSets.testFixtures.output
+        runtimeClasspath += sourceSets.main.output + sourceSets.testFixtures.output
+        resources {
+            srcDir 'docs/contracts'
+        }
+    }
+}
+
+configurations {
+    e2eImplementation.extendsFrom(testFixturesImplementation)
+}
+
+dependencies {
+    // trino-testing подтягивает trino-main + guava 33.6.0 + jackson 2.21.3
+    e2eImplementation "io.trino:trino-testing:${trinoVer}"
+    e2eImplementation "io.trino:trino-memory:${trinoVer}"
+    e2eImplementation "io.trino:trino-spi:${trinoVer}"
+    e2eImplementation platform('org.junit:junit-bom:5.10.2')
+    e2eImplementation 'org.junit.jupiter:junit-jupiter-api'
+    e2eRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
+    e2eRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Валидация rx-data по json schem'е
+    e2eImplementation 'com.networknt:json-schema-validator:1.5.6'
+    // Testcontainers для install-smoke
+    e2eImplementation 'org.testcontainers:testcontainers:1.20.4'
+    e2eImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+}
+
+tasks.register('e2eTest', Test) {
+    group = 'verification'
+    description = 'E2E-тесты in-process: реальный движок Trino + реальный шаффл + упаковка'
+    testClassesDirs = sourceSets.e2e.output.classesDirs
+    classpath = sourceSets.e2e.runtimeClasspath
+    useJUnitPlatform {
+        // install-smoke исключён из дефолтного check — только на релиз
+        excludeTags 'install-smoke'
+    }
+    def tmp = layout.buildDirectory.dir('tmp/e2e').get().asFile
+    doFirst { tmp.mkdirs() }
+    jvmArgs '--add-modules=jdk.incubator.vector',
+            '-Xmx3g',
+            '-Dairlift.quiet=true',
+            "-Djava.io.tmpdir=${tmp}"
+    // DistDocPackagingE2ETest читает build/libs/dist
+    dependsOn('deployPlugin')
+}
+
+tasks.register('installSmokeTest', Test) {
+    group = 'verification'
+    description = 'Install-smoke тест: реальный образ trinodb/trino через Testcontainers'
+    testClassesDirs = sourceSets.e2e.output.classesDirs
+    classpath = sourceSets.e2e.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'install-smoke'
+    }
+    def tmp = layout.buildDirectory.dir('tmp/install-smoke').get().asFile
+    doFirst { tmp.mkdirs() }
+    jvmArgs '--add-modules=jdk.incubator.vector',
+            '-Xmx3g',
+            '-Dairlift.quiet=true',
+            "-Djava.io.tmpdir=${tmp}"
+    // install-smoke требует готовый build/libs/dist
+    dependsOn('deployPlugin')
+}
+
+tasks.named('check') {
+    dependsOn('e2eTest')
+}
+
+jar {
+    archiveBaseName.set("trino-${trinoVer}-distdoc")
+    archiveVersion.set(distdocVer)
+}
+
+
+// =========================================================================
+// CHAOS GEN/LOAD — JavaExec (без fat-jar в dev-цикле)
+// =========================================================================
+tasks.register('chaosGen', JavaExec) {
+    group = 'verification'
+    description = 'Генерация хаос-данных (testFixtures) через JavaExec'
+    classpath = sourceSets.testFixtures.runtimeClasspath
+    mainClass = 'io.github.mcgr0g.distdoc.chaos.apps.ChaosGeneratorApp'
+}
+
+tasks.register('chaosLoad', JavaExec) {
+    group = 'verification'
+    description = 'Загрузка хаос-данных в Trino по JDBC через JavaExec'
+    classpath = sourceSets.testFixtures.runtimeClasspath
+    mainClass = 'io.github.mcgr0g.distdoc.chaos.apps.JdbcChaosLoaderApp'
+    // Сериализация: сначала chaosGen создаёт файлы, потом chaosLoad загружает их
+    dependsOn tasks.named('chaosGen')
+}
+
+// Umbrella-задача для mise: сериализует chaosLoad (который тянет chaosGen) + downloadTrinoCli
+tasks.register('prepareLocalCluster') {
+    group = 'verification'
+    description = 'Подготовка локального кластера: генерация данных + загрузка + скачивание CLI'
+    dependsOn tasks.named('chaosLoad'), tasks.named('downloadTrinoCli')
+}
+
+// =========================================================================
+// COMPOSE ENV — единственный производитель версий для Docker Compose
+// =========================================================================
+tasks.register('composeEnv') {
+    group = 'verification'
+    description = 'Запись версий и системных переменных в build/compose/versions.env для Docker Compose'
+    def envFile = layout.buildDirectory.file('compose/versions.env').get().asFile
+    outputs.file(envFile)
+    doLast {
+        envFile.parentFile.mkdirs()
+        envFile.text = """\
+TRINO_VERSION=${trinoVer}
+DISTDOC_VERSION=${distdocVer}
+UID=${providers.exec { commandLine('id', '-u') }.standardOutput.asText.get().trim()}
+GID=${providers.exec { commandLine('id', '-g') }.standardOutput.asText.get().trim()}
+""".stripIndent()
+        println("WROTE ${envFile.absolutePath}")
+    }
+}
+
+// =========================================================================
+// ТОНКИЙ ДЕПЛОЙ ОСНОВНОГО ПЛАГИНА
+// =========================================================================
+
+tasks.register('deployPlugin', Copy) {
+    group = 'verification'
+    description = 'Плоский тонкий деплой плагина Trino (thin jars) в папку дистрибуции'
+
+    // 1. Очищаем целевую папку перед каждым копированием, убирая старые артефакты
+    doFirst {
+        delete fileTree(layout.buildDirectory.dir("libs/dist"))
+    }
+
+    // 2. Забираем скомпилированный тонкий JAR вашего плагина
+    from tasks.named('jar')
+
+    // 3. Забираем только продовые runtime-библиотеки (Gradle сам отсечет compileOnly trino-spi!)
+    from sourceSets.main.runtimeClasspath.filter { it.name.endsWith('.jar') }
+
+    // 4. Складываем плоским списком в папку, которую монтирует Docker Compose
+    into project.layout.buildDirectory.dir("libs/dist")
+}
+
+// =========================================================================
+// СБОРКА FAT JAR ДЛЯ АВТОНОМНЫХ ФИКСТУР (Для тестов на localhost)
+// =========================================================================
+tasks.register('shadowTestFixturesJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    group = 'verification'
+    description = 'Сборка монолитного Fat JAR для автономного запуска фикстур хаоса по JDBC'
+
+    // 1. Указываем, что собирать нужно именно классы фикстур
+    from sourceSets.testFixtures.output
+
+    // 2. Подтягиваем все runtime-зависимости, объявленные для testFixtures
+    configurations = [project.configurations.testFixturesRuntimeClasspath]
+
+    // 3. Конфигурируем имя и место сохранения итогового артефакта
+    archiveBaseName.set("distdoc-fixtures")
+    archiveClassifier.set("all")
+    archiveVersion.set(distdocVer)
+
+    // изолируем файл от Docker-волюма Trino
+    destinationDirectory.set(project.layout.buildDirectory.dir("libs/fixtures"))
+
+    manifest {
+        attributes 'Main-Class': 'io.github.mcgr0g.distdoc.chaos.apps.ChaosSuiteApp'
+    }
+    // Исключаем системный мусор и дубликаты манифестов
+    exclude 'META-INF/maven/**'
+    exclude 'META-INF/LICENSE*'
+    exclude 'META-INF/NOTICE*'
+}
+
+// Связываем обе задачи дистрибуции со стандартным жизненным циклом Gradle build
+tasks.named('build') {
+    dependsOn(tasks.named('deployPlugin'))
+    dependsOn(tasks.named('shadowTestFixturesJar'))
+}
+
+// Создаем таску копирования артефакта из кэша Gradle в локальную папку проекта
+tasks.register('downloadTrinoCli', Copy) {
+    group = 'verification'
+    description = 'Скачивание официального trino-cli из Maven кэша в локальную папку'
+
+    // Использование .incoming.files изолирует эту таску от графа сборки всего проекта
+    from configurations.trinoCli.incoming.files
+    into layout.projectDirectory.dir(".local/bin")
+    rename { String fileName -> "trino-cli" }
+
+    filePermissions {
+        user {
+            read = true
+            write = true
+            execute = true
+        }
+    }
+}
+
+// =========================================================================
+// ПОДСТАНОВКА ВЕРСИИ В РЕСУРС КОНФИГА
+// =========================================================================
+// Единственный источник значения версии — gradle.properties (distdocVersion);
+// app-config.toml хранит плейсхолдер @distdocVersion@, который раскрывается при сборке.
+// ReplaceTokens, а не expand(): в файле есть литералы "$oid" и "$.", которые
+// Groovy SimpleTemplateEngine принял бы за выражения.
+processResources {
+    filesMatching('app-config.toml') {
+        filter(org.apache.tools.ant.filters.ReplaceTokens, tokens: [distdocVersion: distdocVer])
+    }
+}

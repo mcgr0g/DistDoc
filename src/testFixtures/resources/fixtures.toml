@@ -1,0 +1,42 @@
+# Сценарии генерации хаос-данных
+[[scenarios]]
+# 1. Таблица-Монстр: Смесь всех аномалий сразу для финальной проверки регрессии
+table = "crm_combined"
+count = 100
+type = "all"
+file = "build/dev-lakehouse/data/combined.jsonl"
+
+[[scenarios]]
+# 2. Изолированная таблица: Только частицы дат в birth_date
+table = "debug_date_part"
+count = 50
+type = "date_as_array"
+file = "build/dev-lakehouse/data/date_part.jsonl"
+
+[[scenarios]]
+# 3. Изолированная таблица: Только пустые массивы в payment_dates
+table = "debug_empty_arrays"
+count = 50
+type = "empty_array"
+file = "build/dev-lakehouse/data/empty_arrays.jsonl"
+
+[[scenarios]]
+# 4. Изолированная таблица: Unix-timestamp в миллисекундах в created_at
+table = "debug_date_unix"
+count = 50
+type = "date_at_unix"
+file = "build/dev-lakehouse/data/date_unix.jsonl"
+
+[[scenarios]]
+# 5. Изолированная таблица: Обычная дата YYYY-MM-DD в created_at
+table = "debug_date_plain"
+count = 50
+type = "date_as_plain"
+file = "build/dev-lakehouse/data/date_plain.jsonl"
+
+[[scenarios]]
+# 6. Эталонная чистая таблица: проверка Type Promotion и таймзон (created_at/updated_at)
+table = "clean"
+count = 50
+type = "clean"
+file = "build/dev-lakehouse/data/clean.jsonl"

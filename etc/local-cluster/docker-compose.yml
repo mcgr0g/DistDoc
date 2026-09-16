@@ -1,0 +1,34 @@
+services:
+  trino:
+    image: trinodb/trino:${TRINO_VERSION}
+    container_name: distdoc-trino-local
+    restart: unless-stopped
+    user: "${UID:-1001}:${GID:-1001}"
+    ports:
+      - "${TRINO_PORT:-8080}:8080"
+    volumes:
+      # JAR-плагин напрямую в Trino
+      - ../../build/libs/dist:/usr/lib/trino/plugin/distdoc:ro
+      # Монтируем системные файлы конфигурации
+      - ./trino-config/config.properties:/etc/trino/config.properties:ro
+      - ./trino-config/jvm.config:/etc/trino/jvm.config:ro
+      - ./trino-config/node.properties:/etc/trino/node.properties:ro
+      # Выделяем Metastore
+      - ./catalog:/etc/trino/catalog:ro
+    environment:
+      - TZ=${TZ:-UTC}
+      - DISTDOC_TRACE_PRESET=${DISTDOC_TRACE_PRESET:-}
+      - DISTDOC_TRACE_SUFFIX=${DISTDOC_TRACE_SUFFIX:-}
+    deploy:
+      resources:
+        limits:
+          memory: 2500m
+          cpus: "2.0"
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: [ "CMD", "trino", "--execute", "SELECT 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s

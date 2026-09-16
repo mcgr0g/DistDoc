@@ -1,0 +1,184 @@
+[settings]
+# Разрешаем mise раскрывать $переменные и гасим предупреждение
+env_shell_expand = false
+
+[tools]
+gradle = "9.6.0"
+java = "temurin-25"
+jaq = "latest"
+
+[env]
+# Версии теперь производятся Gradle → build/compose/versions.env (читается compose через --env-file)
+# TRINO_VERSION, DISTDOC_VERSION, UID, GID удалены отсюда
+
+DEV_LAKE_DATA_PATH = "build/dev-lakehouse/data"
+DEV_LAKE_SCHEMA_PATH = "build/dev-lakehouse/schema"
+_.file = [
+    '.env',
+    'src/testFixtures/resources/fixtures.env'
+]
+
+LOCAL_CLUSTER_CLI_FLAGS = """./.local/bin/trino-cli --user=admin \
+  --server=http://{{env.TRINO_HOST}}:{{env.TRINO_PORT}} --catalog={{env.TRINO_CATALOG}} --schema={{env.TRINO_SCHEMA}} \
+"""
+# Аргумент вызова UDAF для задач lc-schema/lc-trace: "" = обычный режим,
+# ", trace()" = пресет, ", trace('имя_поля')" = явный режим. Переопределяется в [tasks.lc-trace].
+TRACE_ARG = ""
+# Имя выходного rx-data задач lc-schema/lc-trace; переопределяется в [tasks.lc-trace].
+LC_REPORT = "combined.rx.json"
+# =========================================================================
+# SHADOWDOC (shadow-кластер прод-интроспекции, см. etc/shadowdoc/)
+# =========================================================================
+# Локальное имя каталога shadow ВСЕГДА `remote` (имя файла catalog/remote.properties;
+# trino2trino мапит один удалённый каталог на один локальный: запросы идут к
+# remote.<schema>.<table>, а lakehouse живёт только внутри REMOTE_TRINO_URL).
+# Переменной REMOTE_CATALOG в задачах НЕТ — удалённый каталог задаётся последним
+# слогом REMOTE_TRINO_URL.
+REMOTE_TRINO_URL = "jdbc:trino://host.docker.internal:8080/lakehouse"
+REMOTE_USER = "admin"
+REMOTE_PASSWORD = ""
+REMOTE_SCHEMA = "default"
+REMOTE_TABLE = "crm_combined"
+SHADOW_PORT = "8081"
+# true -> копия rx-data сохраняется в etc/shadowdoc/data/<REMOTE_TABLE>-<timestamp>.rx.json
+SHADOW_PERSIST = "false"
+SHADOW_CLI_FLAGS = """./.local/bin/trino-cli --user=admin \
+  --server=http://localhost:{{env.SHADOW_PORT}} --catalog=remote --schema={{env.REMOTE_SCHEMA}} \
+"""
+
+[tasks.composeEnv]
+description = "Запись версий в build/compose/versions.env"
+run = "./gradlew composeEnv"
+outputs = ["build/compose/versions.env"]
+
+# =========================================================================
+# ИНФРАСТРУКТУРНЫЕ КОМАНДЫ (Сборка и Жизненный цикл Docker)
+# =========================================================================
+
+[tasks.build]
+description = "make fat jars at build/libs/"
+run = "./gradlew build"
+sources = ["src/**/*", "build.gradle", "settings.gradle"]
+# outputs обязателен: без него mise пропускает задачу по неизменности sources,
+# даже если артефакты удалены (например, ./gradlew clean) — задачи lc-gen/lc-load
+# падают на отсутствующем jar.
+outputs = [
+    "build/libs/trino-*-distdoc-*.jar",
+    "build/libs/fixtures/distdoc-fixtures-*-all.jar",
+    "build/libs/dist/*.jar",
+]
+
+[tasks.test]
+run = "./gradlew cleanTest test --info"
+
+[tasks.cli-download]
+description = "Нативное скачивание trino-cli через кэш зависимостей Gradle"
+depends = ["build"]
+run = "./gradlew downloadTrinoCli"
+outputs = [".local/bin/trino-cli"]
+
+[tasks.lc-up]
+depends = ["build", "composeEnv"]
+description = "Развертывание локального кластера Trino"
+# Smoke env-override трассировки: активная строка — проверить и закомментировать.
+env = { DISTDOC_TRACE_PRESET = "_id.$oid,_id,id,uuid,guid,oid,business_key" }
+# --wait: ждём healthcheck контейнера, иначе lc-load стартует до готовности Trino
+run = "docker compose -f etc/local-cluster/docker-compose.yml --env-file build/compose/versions.env up -d --wait"
+
+[tasks.lc-dn]
+description = "Остановка локального кластера"
+run = "docker compose -f etc/local-cluster/docker-compose.yml down -v"
+
+[tasks.lc-gen]
+description = "Генерация хаос-данных через JavaExec"
+depends = ["build"]
+sources = ["src/testFixtures/resources/fixtures.toml"]
+outputs = ["{{env.DEV_LAKE_DATA_PATH}}/*.jsonl"]
+run = "./gradlew chaosGen"
+
+[tasks.lc-load]
+description = "Быстрый импорт фикстур в RAM Trino по JDBC через JavaExec"
+depends = ["lc-up"]
+# Gradle prepareLocalCluster сериализует chaosGen → chaosLoad + downloadTrinoCli
+run = "./gradlew prepareLocalCluster"
+
+[tasks.lc-cli]
+description = "Запуск интерактивного терминала Trino CLI"
+run = "{{env.LOCAL_CLUSTER_CLI_FLAGS}}"
+
+[tasks.lc-schema]
+description = "Анализ схемы данных и выгрузка форматированного JSON-отчета"
+depends = ["lc-load"]
+run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
+  {{env.LOCAL_CLUSTER_CLI_FLAGS}} --output-format=TSV \
+  --execute="SELECT analyze_json_schema(line{{env.TRACE_ARG}}) as jsonpath FROM crm_combined;" \
+  | jaq -R 'fromjson?' > {{env.DEV_LAKE_SCHEMA_PATH}}/{{env.LC_REPORT}} && \
+  cat {{env.DEV_LAKE_SCHEMA_PATH}}/{{env.LC_REPORT}}
+"""
+
+[tasks.lc-trace]
+description = "Анализ схемы crm_combined с трассировкой trace_ids (пресет) — отчёт build/dev-lakehouse/schema/combined.trace.rx.json"
+depends = ["lc-load"]
+env = { TRACE_ARG = ", trace()", LC_REPORT = "combined.trace.rx.json" }
+# Явный режим по полю 1 уровня (поле присутствует в ~50% строк): раскомментировать вместо строки выше.
+# env = { TRACE_ARG = ", trace('surrogate_pk')", LC_REPORT = "combined.trace.rx.json" }
+run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
+  {{env.LOCAL_CLUSTER_CLI_FLAGS}} --output-format=TSV \
+  --execute="SELECT analyze_json_schema(line{{env.TRACE_ARG}}) as jsonpath FROM crm_combined;" \
+  | jaq -R 'fromjson?' > {{env.DEV_LAKE_SCHEMA_PATH}}/{{env.LC_REPORT}} && \
+  cat {{env.DEV_LAKE_SCHEMA_PATH}}/{{env.LC_REPORT}}
+"""
+
+[tasks.lc-verify]
+description = "Полная верификация: unit + e2e (включая lc-schema/lc-trace), авто-остановка кластера"
+# Новый путь: ./gradlew check запускает test + e2eTest (заменяет lc-schema + lc-trace)
+run = "./gradlew check"
+depends_post = ["lc-dn"]
+
+[tasks.lc-demo]
+description = "Полный демо-пайплайн локального кластера с авто-остановкой (вершина DAG)"
+depends = ["lc-schema"]
+depends_post = ["lc-dn"]
+
+# =========================================================================
+# SHADOWDOC: задачи shadow-кластера (префикс sd-)
+# =========================================================================
+
+[tasks.sd-up]
+description = "Развертывание shadow-кластера ShadowDoc (Trino + trino2trino + DistDoc)"
+depends = ["build", "composeEnv"]
+# --wait: ждём healthcheck контейнера, иначе первый же запрос sd-schema получает Connection reset
+run = "docker compose -f etc/shadowdoc/docker-compose.yml --env-file build/compose/versions.env up -d --wait"
+
+[tasks.sd-dn]
+description = "Остановка shadow-кластера"
+run = "docker compose -f etc/shadowdoc/docker-compose.yml down -v"
+
+[tasks.sd-cli]
+description = "Интерактивный trino-cli к shadow-кластеру"
+run = "{{env.SHADOW_CLI_FLAGS}}"
+[tasks.sd-schema]
+description = "Интроспекция прод-таблицы через ShadowDoc и отчёт build/dev-lakehouse/schema/shadow.rx.json"
+depends = ["lc-load", "sd-up"]
+# cli-download вызван внутри lc-load (prepareLocalCluster)
+run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
+  {{env.SHADOW_CLI_FLAGS}} --output-format=TSV \
+  --execute='SELECT analyze_json_schema(line) as jsonpath FROM remote.{{env.REMOTE_SCHEMA}}.{{env.REMOTE_TABLE}};' \
+  | jaq -R 'fromjson?' > {{env.DEV_LAKE_SCHEMA_PATH}}/shadow.rx.json && \
+  if [ "{{env.SHADOW_PERSIST}}" = "true" ]; then \
+    mkdir -p etc/shadowdoc/data && \
+    cp {{env.DEV_LAKE_SCHEMA_PATH}}/shadow.rx.json etc/shadowdoc/data/{{env.REMOTE_TABLE}}-$(date +%Y%m%d-%H%M%S).rx.json; \
+  fi && \
+  cat {{env.DEV_LAKE_SCHEMA_PATH}}/shadow.rx.json
+"""
+
+[tasks.sd-demo]
+description = "Полный демо-пайплайн локального shadow кластера с авто-остановкой (вершина DAG)"
+# run-шаги, а не depends: depends mise выполняет параллельно (--jobs), а lc-load и sd-schema
+# оба тянут ./gradlew (build внутри себя гоняет :test) — два одновременных прогона по одному
+# build/ роняют друг друга на build/test-results.
+run = [
+    { task = "lc-load" },   # прод-эмулятор: lc-up + импорт фикстур в RAM
+    { task = "sd-schema" }, # sd-up + интроспекция через shadow (внутри — set -o pipefail)
+]
+depends_post = ["lc-dn", "sd-dn"]

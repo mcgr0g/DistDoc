@@ -1,0 +1,39 @@
+# ShadowDoc: теневой Trino для прод-интроспекции без установки плагина на прод.
+# Прод-Trino подключается как read-only каталог `remote` через коннектор trino2trino
+# (etc/shadowdoc/plugin/trino2trino, скачивается fetch-trino2trino.sh).
+# UDAF analyze_json_schema выполняется локально в shadow — на прод ничего не ставится.
+services:
+  trino:
+    image: trinodb/trino:${TRINO_VERSION}
+    container_name: shadowdoc-trino-local
+    restart: unless-stopped
+    user: "${UID:-1001}:${GID:-1001}"
+    ports:
+      - "${SHADOW_PORT:-8081}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # JAR-плагин DistDoc напрямую в Trino (тот же build/libs/dist, что у lc-кластера)
+      - ../../build/libs/dist:/usr/lib/trino/plugin/distdoc:ro
+      # Сторонний Trino->Trino коннектор (kkd927/trino2trino), локальное имя каталога — trino
+      - ./plugin/trino2trino:/usr/lib/trino/plugin/trino:ro
+      # Монтируем системные файлы конфигурации
+      - ./trino-config/config.properties:/etc/trino/config.properties:ro
+      - ./trino-config/jvm.config:/etc/trino/jvm.config:ro
+      - ./trino-config/node.properties:/etc/trino/node.properties:ro
+      # Каталог с remote.properties: прод виден как read-only каталог `remote`
+      - ./catalog:/etc/trino/catalog:ro
+      # Каталог файловых артефактов: rx-data (.rx.json), дампы. Таблицы Trino
+      # ВСЕГДА in-memory (Memory connector) — персистентность ShadowDoc обеспечивают файлы в ./data
+      - ./data:/data
+    environment:
+      - TZ=${TZ:-UTC}
+      - REMOTE_TRINO_URL=${REMOTE_TRINO_URL}
+      - REMOTE_USER=${REMOTE_USER}
+      - REMOTE_PASSWORD=${REMOTE_PASSWORD}
+    healthcheck:
+      test: [ "CMD", "trino", "--execute", "SELECT 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s

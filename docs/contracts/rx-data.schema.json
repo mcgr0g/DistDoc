@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/mcgr0g/distdoc/main/docs/contracts/rx-data.schema.json",
+  "$comment": "Машиночитаемый контракт rx-data (.rx.json), выход UDAF analyze_json_schema. Версия схемы = X.Y из версии плагина X.Y.Z.",
+  "title": "DistDoc rx-data (.rx.json)",
+  "description": "rx-data: { \"<jsonpath>\": { \"type\", \"max_length\", <флаги аномалий>, \"trace_ids\"?, \"trace_id_key\"? } }. Имена jsonpath-ключей произвольны (зависят от данных), форма значений фиксирована.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "Версия схемы rx-data (major.minor), например \"1.1\"."
+    }
+  },
+  "required": ["schema_version"],
+  "additionalProperties": { "$ref": "#/$defs/pathMetrics" },
+  "$defs": {
+    "pathMetrics": {
+      "type": "object",
+      "description": "Метрики одного jsonpath-пути.",
+      "properties": {
+        "type": {
+          "$comment": "Поле данных rx-data «type» (не ключевое слово JSON Schema); имя зафиксировано SchemaStateSerializer.FIELD_TYPE — не переименовывать.",
+          "type": "string",
+          "description": "Итоговый тип данных пути (сведённый по правилу Type Promotion).",
+          "enum": ["UNKNOWN", "VARCHAR", "INTEGER", "DOUBLE", "ARRAY", "BOOLEAN"]
+        },
+        "max_length": {
+          "type": "integer",
+          "description": "Максимальная длина строкового значения в символах (0 для не-строковых путей).",
+          "minimum": 0
+        },
+        "trace_ids": {
+          "type": "array",
+          "description": "Идентификаторы строк-источников (trace-режим); лимит задаётся app-config.toml (max_ids).",
+          "items": { "type": "string" }
+        },
+        "trace_id_key": {
+          "type": "string",
+          "description": "Имя поля-источника trace_id; \"\" — источник не найден. Присутствует только вместе с trace_ids."
+        }
+      },
+      "required": ["type", "max_length"],
+      "additionalProperties": {
+        "type": "boolean",
+        "description": "Плоские флаги аномалий (is_array_empty, is_flat_string_array, is_date_part_array, …)."
+      }
+    }
+  }
+}

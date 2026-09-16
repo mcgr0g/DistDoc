@@ -1,0 +1,25 @@
+.gradle
+.idea
+.local
+local
+.env
+.omp/
+etc/shadowdoc/plugin/
+
+# Сборка
+build/
+out/
+bin/
+# IDE / языковой сервер (Eclipse Buildship через jdtls, IntelliJ)
+.project
+.classpath
+.settings/
+*.iml
+.vscode/
+# Скрэтч OMP
+.agent-tmp/
+# macOS
+.DS_Store
+# Сырые дампы ShadowDoc (каталог трекается через .gitkeep)
+etc/shadowdoc/data/*
+!etc/shadowdoc/data/.gitkeep

@@ -1,0 +1,46 @@
+Business Source License 1.1
+
+License text copyright © 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+
+Parameters:
+Licensor:             mcgr0g
+Licensed Work:        DistDoc (and related components)
+Value:                Production Use
+Change Date:          2030-08-29
+Change License:       Apache License 2.0 (as published by the Apache Software Foundation)
+Additional Use Grant: You may use the Licensed Work for any non-production purpose.
+                      You may also use the Licensed Work for production purposes,
+                      provided that your organization operates with less than $25,000,000 USD
+                      in annual gross revenue AND deploys the Licensed Work on fewer than
+                      5 Trino nodes simultaneously.
+
+Terms
+
+1. Grant of License
+
+The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and make non-production use of the Licensed Work. You may make production use of the Licensed Work only as specifically permitted by the Additional Use Grant or as otherwise specified in this License.
+
+1. Effective Date
+
+This License is effective as of the date you accept it, or the date you first copy, modify, create derivative works, redistribute, or make use of the Licensed Work, whichever is earlier.
+
+1. Change Date
+
+Upon the Change Date, or the fourth anniversary of the first public distribution of a specific version of the Licensed Work under this License, whichever is earlier, the Licensor hereby grants you the right to use the Licensed Work under the Change License. Your rights under this License shall terminate on the Change Date, and your use of the Licensed Work shall thereafter be governed solely by the Change License.
+
+1. Termination
+
+This License and the rights granted hereunder will terminate automatically if you fail to comply with any of its terms. Upon termination, you must cease all use of the Licensed Work and destroy all copies in your possession.
+
+1. Compliance and Commercial License
+
+If your use of the Licensed Work is not permitted by this License or the Additional Use Grant, you must either purchase a commercial license from the Licensor or cease such use of the Licensed Work.
+
+1. Disclaimer of Warranty
+
+THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE LICENSED WORK.
+
+1. Covenants of Licensor
+
+The Licensor covenants that the Change License will be a license approved by the Open Source Initiative (OSI) or a license compatible with the GNU General Public License (GPL) version 2.0 or later.

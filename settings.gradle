@@ -1,0 +1,28 @@
+pluginManagement {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    // Включаем жесткую enterprise-защиту: все репозитории объявляются ТОЛЬКО тут
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+
+    repositories {
+        mavenCentral()
+
+        // Переносим наш S3/GitHub-шаблон сюда, оформляя его по канонам Gradle 9
+        ivy {
+            url=uri("https://github.com/trinodb/trino/releases/download/")
+            patternLayout {
+                artifact "[revision]/[artifact]-[revision]"
+            }
+            metadataSources {
+                artifact()
+            }
+        }
+    }
+}
+
+rootProject.name = 'distdoc'
