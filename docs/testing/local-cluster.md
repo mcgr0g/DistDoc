@@ -58,6 +58,16 @@ FROM unnest(cast(json_parse(?) as array(json))) as t(item)
 *   `mise run lc-verify` — Полная верификация: `./gradlew check` (unit + e2e-тесты) с авто-остановкой кластера (`depends_post = ["lc-dn"]`). Заменяет `lc-schema` + `lc-trace` — E2E-тесты выполняются in-memory.
 *   `mise run sd-demo` — Вершина shadow-DAG: `lc-load` (прод-эмулятор) → `sd-schema` (shadow-интроспекция) с авто-остановкой обоих кластеров (`depends_post = ["lc-dn", "sd-dn"]`).
 
+### Изоляция CLI от глобального конфига
+trino-cli 483 подхватывает значения по умолчанию для опций из первого существующего файла цепочки
+`TRINO_CONFIG` → `~/.trino_config` → `$XDG_CONFIG_HOME/trino/config` и валидирует его ключи как имена опций.
+Пользовательский `external-authentication=true` роняет прогон с сообщением
+`TLS/SSL required for authentication using external authorization`: флаги задач перекрывают
+`server/user/catalog/schema`, но `external-authentication` остаётся включённым, а `HttpClientFactory` требует TLS.
+Поэтому `lc-cli/lc-schema/lc-trace/sd-cli/sd-schema` принудительно ставят `TRINO_CONFIG=etc/trino-cli.properties` —
+цепочка поиска останавливается на этом файле. Ключи в него добавлять нельзя: любой ключ, не совпадающий
+с именем опции CLI, приводит к `contains unknown properties` и `exit 1`.
+
 ## 5. ShadowDoc (прод-интроспекция без установки плагина)
 
 ShadowDoc — теневой кластер (имя **shadowdoc**, mise-задачи `sd-*`) для тяжёлых случаев, когда на прод катить страшно. Прод-Trino подключается как **read-only** каталог данных: плагин DistDoc ставится только в shadow-контейнер, UDAF `analyze_json_schema` выполняется локально, на прод ничего не устанавливается и ничего не пишется.

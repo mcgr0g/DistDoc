@@ -18,6 +18,10 @@ _.file = [
     'src/testFixtures/resources/fixtures.env'
 ]
 
+# trino-cli берёт дефолты опций из TRINO_CONFIG -> ~/.trino_config -> $XDG_CONFIG_HOME/trino/config
+# (io.trino.cli.Trino#getConfigSearchPaths). Задачи, вызывающие CLI, принудительно ставят TRINO_CONFIG
+# на нейтральный файл etc/trino-cli.properties, иначе пользовательский `external-authentication=true`
+# роняет прогон на http-сервере: "TLS/SSL required for authentication using external authorization".
 LOCAL_CLUSTER_CLI_FLAGS = """./.local/bin/trino-cli --user=admin \
   --server=http://{{env.TRINO_HOST}}:{{env.TRINO_PORT}} --catalog={{env.TRINO_CATALOG}} --schema={{env.TRINO_SCHEMA}} \
 """
@@ -104,11 +108,13 @@ run = "./gradlew prepareLocalCluster"
 
 [tasks.lc-cli]
 description = "Запуск интерактивного терминала Trino CLI"
+env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties" }
 run = "{{env.LOCAL_CLUSTER_CLI_FLAGS}}"
 
 [tasks.lc-schema]
 description = "Анализ схемы данных и выгрузка форматированного JSON-отчета"
 depends = ["lc-load"]
+env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties" }
 run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
   {{env.LOCAL_CLUSTER_CLI_FLAGS}} --output-format=TSV \
   --execute="SELECT analyze_json_schema(line{{env.TRACE_ARG}}) as jsonpath FROM crm_combined;" \
@@ -119,9 +125,9 @@ run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
 [tasks.lc-trace]
 description = "Анализ схемы crm_combined с трассировкой trace_ids (пресет) — отчёт build/dev-lakehouse/schema/combined.trace.rx.json"
 depends = ["lc-load"]
-env = { TRACE_ARG = ", trace()", LC_REPORT = "combined.trace.rx.json" }
+env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties", TRACE_ARG = ", trace()", LC_REPORT = "combined.trace.rx.json" }
 # Явный режим по полю 1 уровня (поле присутствует в ~50% строк): раскомментировать вместо строки выше.
-# env = { TRACE_ARG = ", trace('surrogate_pk')", LC_REPORT = "combined.trace.rx.json" }
+# env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties", TRACE_ARG = ", trace('surrogate_pk')", LC_REPORT = "combined.trace.rx.json" }
 run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
   {{env.LOCAL_CLUSTER_CLI_FLAGS}} --output-format=TSV \
   --execute="SELECT analyze_json_schema(line{{env.TRACE_ARG}}) as jsonpath FROM crm_combined;" \
@@ -156,10 +162,12 @@ run = "docker compose -f etc/shadowdoc/docker-compose.yml down -v"
 
 [tasks.sd-cli]
 description = "Интерактивный trino-cli к shadow-кластеру"
+env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties" }
 run = "{{env.SHADOW_CLI_FLAGS}}"
 [tasks.sd-schema]
 description = "Интроспекция прод-таблицы через ShadowDoc и отчёт build/dev-lakehouse/schema/shadow.rx.json"
 depends = ["lc-load", "sd-up"]
+env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties" }
 # cli-download вызван внутри lc-load (prepareLocalCluster)
 run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
   {{env.SHADOW_CLI_FLAGS}} --output-format=TSV \
