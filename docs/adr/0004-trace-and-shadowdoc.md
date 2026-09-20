@@ -42,7 +42,7 @@ env-переменными `DISTDOC_TRACE_PRESET`/`DISTDOC_TRACE_SUFFIX` — з�
 `etc/shadowdoc/data/<REMOTE_TABLE>-<timestamp>.rx.json` (bind-mount, переживает `sd-dn`).
 Mise-задачи `sd-up`/`sd-dn`/`sd-cli`/`sd-schema`; вершины DAG: `lc-demo` (lc-schema +
 пост-остановка `lc-dn`), `sd-demo` (lc-load → sd-schema с пост-остановкой `lc-dn` и `sd-dn`),
-`lc-verify` (test + оба прогона + `lc-dn`); `lc-schema` остаётся изолированной задачей.
+`lc-verify` (unit + in-process e2e, затем оба Docker-прогона `lc-schema` и `lc-trace` + `lc-dn`); `lc-schema` остаётся изолированной задачей.
 `lc-up`/`sd-up` ждут healthcheck контейнера (`up -d --wait`).
 
 ## Consequences

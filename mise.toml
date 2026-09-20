@@ -90,8 +90,9 @@ env = { DISTDOC_TRACE_PRESET = "_id.$oid,_id,id,uuid,guid,oid,business_key" }
 run = "docker compose -f etc/local-cluster/docker-compose.yml --env-file build/compose/versions.env up -d --wait"
 
 [tasks.lc-dn]
+depends = ["composeEnv"]
 description = "Остановка локального кластера"
-run = "docker compose -f etc/local-cluster/docker-compose.yml down -v"
+run = "docker compose -f etc/local-cluster/docker-compose.yml --env-file build/compose/versions.env down -v"
 
 [tasks.lc-gen]
 description = "Генерация хаос-данных через JavaExec"
@@ -136,9 +137,14 @@ run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
 """
 
 [tasks.lc-verify]
-description = "Полная верификация: unit + e2e (включая lc-schema/lc-trace), авто-остановка кластера"
-# Новый путь: ./gradlew check запускает test + e2eTest (заменяет lc-schema + lc-trace)
-run = "./gradlew check"
+description = "Полная верификация: unit + e2e и локальные lc-schema/lc-trace, авто-остановка кластера"
+# Gradle check проверяет in-process unit + e2e; затем mise-прогоны проверяют
+# реальный Docker/Trino-путь, который Gradle не покрывает.
+run = [
+    "./gradlew check",
+    { task = "lc-schema" },
+    { task = "lc-trace" },
+]
 depends_post = ["lc-dn"]
 
 [tasks.lc-demo]

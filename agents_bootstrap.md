@@ -73,7 +73,7 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 - `mise run lc-cli` — интерактивный trino-cli;
 - `mise run lc-schema` — прогон UDAF над crm_combined и отчёт `build/dev-lakehouse/schema/combined.rx.json` (depends lc-load);
 - `mise run lc-trace` — trace-режим с пресетом, отчёт `combined.trace.rx.json` (depends lc-load);
-- `mise run lc-verify` — полная верификация: `./gradlew check` (unit + e2e-тесты, заменяет lc-schema + lc-trace) с авто-остановкой `lc-dn`;
+- `mise run lc-verify` — полная верификация: `./gradlew check` (unit + in-process e2e), затем реальный Docker-путь `lc-schema` и `lc-trace`; после завершения кластер автоматически останавливается через `lc-dn`.
 - `mise run lc-demo` — вершина локального DAG: lc-schema + пост-остановка `lc-dn` (depends_post), кластер не работает в холостую;
 - `mise run sd-demo` — вершина shadow-DAG: lc-load → sd-schema с авто-остановкой `lc-dn` и `sd-dn`;
 - `mise run sd-up` / `sd-dn` — развертывание/остановка shadow-кластера ShadowDoc (`etc/shadowdoc/docker-compose.yml`, depends composeEnv);

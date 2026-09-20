@@ -55,7 +55,7 @@ FROM unnest(cast(json_parse(?) as array(json))) as t(item)
 *   `mise run lc-schema` — Запуск UDAF-плагина над таблицей хаоса, анализ схемы и выгрузка отформатированного JSON-отчета в `build/dev-lakehouse/schema/combined.rx.json` с помощью `jaq`.
 *   `mise run lc-trace` — Тот же UDAF в trace-режиме (пресет), отчёт `build/dev-lakehouse/schema/combined.trace.rx.json`. Детали и явный режим — docs/testing/tracing.md, раздел "Дополнительные команды (lc-trace)".
 *   `mise run lc-demo` — Вершина локального DAG: полный демо-пайплайн (lc-schema) с авто-остановкой кластера в пост-вызове (`depends_post = ["lc-dn"]`), чтобы контейнер не работал в холостую. `lc-schema` остаётся изолированной задачей DAG.
-*   `mise run lc-verify` — Полная верификация: `./gradlew check` (unit + e2e-тесты) с авто-остановкой кластера (`depends_post = ["lc-dn"]`). Заменяет `lc-schema` + `lc-trace` — E2E-тесты выполняются in-memory.
+*   `mise run lc-verify` — полная верификация: `./gradlew check` (unit + in-process e2e), затем реальные Docker/Trino-прогоны `lc-schema` и `lc-trace` через `trino-cli`; после завершения кластер автоматически останавливается (`depends_post = ["lc-dn"]`). Проверяются также генерация фикстур, JDBC-загрузка и CLI-путь, которые E2E не заменяют.
 *   `mise run sd-demo` — Вершина shadow-DAG: `lc-load` (прод-эмулятор) → `sd-schema` (shadow-интроспекция) с авто-остановкой обоих кластеров (`depends_post = ["lc-dn", "sd-dn"]`).
 
 ### Изоляция CLI от глобального конфига
