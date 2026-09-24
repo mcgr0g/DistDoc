@@ -8,7 +8,7 @@ package io.github.mcgr0g.distdoc.udaf.formats;
  *
  * <p><b>Порядок объявления — часть контракта:</b> это приоритет SQL-подстановок генератора
  * и порядок сериализации {@code observed_formats}. Добавление элемента — minor-версия
- * схемы, изменение семантики существующего — major (docs/adr/0006-format-detection.md).</p>
+ * схемы, изменение семантики существующего — major (docs/contracts/value-formats.md).</p>
  *
  * @see FormatDetector
  */

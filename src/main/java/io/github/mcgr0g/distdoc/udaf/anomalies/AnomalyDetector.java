@@ -39,7 +39,7 @@ public class AnomalyDetector implements ArrayAnomalyDetector {
 
     /**
      * Ключ аномалии: Массив пуст.
-     * Соответствует имени булевой колонки в итоговом JSON-отчете.
+     * Соответствует ключу в {@code anomalies} итогового JSON-отчета.
      */
     public static final String METRIC_IS_EMPTY = "is_array_empty";
 
@@ -55,8 +55,8 @@ public class AnomalyDetector implements ArrayAnomalyDetector {
 
     /**
      * Выполняет потоковый анализ контекста массива. Если аномалия обнаружена,
-     * соответствующий флаг со значением {@code true} динамически записывается
-     * в мутабельную карту метрик пути.
+     * её имя монотонно фиксируется
+     * в метриках пути ({@link PathMetrics#markAnomaly(String)}).
      *
      * @param context неизменяемый snapshot данных текущего массива
      * @param metrics контейнер метрик, куда будет сохранен результат детекции
@@ -67,13 +67,13 @@ public class AnomalyDetector implements ArrayAnomalyDetector {
 
         // 1. Проверка на пустой массив
         if (elements.isEmpty()) {
-            metrics.setAnomaly(METRIC_IS_EMPTY, true);
+            metrics.markAnomaly(METRIC_IS_EMPTY);
             return;
         }
 
         // 2. Проверка на плоский массив строк
         if (context.allStrings()) {
-            metrics.setAnomaly(METRIC_IS_STRING_ARRAY, true);
+            metrics.markAnomaly(METRIC_IS_STRING_ARRAY);
         }
 
         // 3. Проверка на компоненты дат (3 элемента, длина 2 или 4, только цифры)
@@ -87,7 +87,7 @@ public class AnomalyDetector implements ArrayAnomalyDetector {
                 }
             }
             if (isDatePart) {
-                metrics.setAnomaly(METRIC_IS_DATE_PART, true);
+                metrics.markAnomaly(METRIC_IS_DATE_PART);
             }
         }
     }

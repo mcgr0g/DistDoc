@@ -12,9 +12,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * Table-driven тесты {@link FormatDetector}. Таблицы повторяют приложение А
- * docs/adr/0006-format-detection.md (А.1 строки, А.2 числа, А.3 path hints):
- * при изменении правила меняются ADR и эта таблица одновременно.
+ * Table-driven тесты {@link FormatDetector}. Таблицы повторяют раздел «Таблица примеров»
+ * docs/contracts/value-formats.md (строки, числа, path hints): при изменении правила
+ * документ и эта таблица меняются одновременно.
  */
 public class FormatDetectorTest {
 
@@ -121,7 +121,7 @@ public class FormatDetectorTest {
                 new NumCase("-100000000000 hint → граница с минусом", FormatDetector.detectInteger(-100_000_000_000L, Context.HINT), UNIX_MILLIS),
                 new NumCase("-99999999999 hint → seconds", FormatDetector.detectInteger(-99_999_999_999L, Context.HINT), UNIX_SECONDS),
                 new NumCase("Long.MIN_VALUE hint → millis без переполнения", FormatDetector.detectInteger(Long.MIN_VALUE, Context.HINT), UNIX_MILLIS),
-                // Слепая зона (ADR-0006 §3): millis 1971-01-01 распознаётся как seconds — поведение документировано
+                // Слепая зона (docs/contracts/value-formats.md): millis 1971-01-01 распознаётся как seconds — поведение документировано
                 new NumCase("31536000000 hint → СЛЕПАЯ ЗОНА: millis 1971 как seconds", FormatDetector.detectInteger(31_536_000_000L, Context.HINT), UNIX_SECONDS),
                 new NumCase("1784769300.5 hint → дробные секунды", FormatDetector.detectDouble(1784769300.5, Context.HINT), UNIX_SECONDS),
                 new NumCase("1784769300000.0 hint → дробные millis не поддержаны", FormatDetector.detectDouble(1784769300000.0, Context.HINT), null),

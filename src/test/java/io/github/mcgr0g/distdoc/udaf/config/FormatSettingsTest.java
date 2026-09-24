@@ -2,29 +2,40 @@ package io.github.mcgr0g.distdoc.udaf.config;
 
 import org.junit.jupiter.api.Test;
 import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+/**
+ * Настройки форматов: реальная секция {@code [format]} + управляемый источник env
+ * ({@link FormatSettings#from}) — результат не зависит от окружения машины.
+ */
 public class FormatSettingsTest {
 
+    private static FormatSettings withEnv(Map<String, String> env) {
+        return FormatSettings.from(AppConfig.section("format"), env::get);
+    }
+
     @Test
-    public void tomlPresetLoaded() {
-        // На машине с заданным env пресет переопределён — проверка toml не имеет смысла
-        String env = System.getenv("DISTDOC_FORMAT_PATH_HINTS");
-        assumeTrue(env == null || env.isBlank(), "DISTDOC_FORMAT_PATH_HINTS задан в окружении");
-        assertEquals(List.of("_at", "_utc"), FormatSettings.getInstance().getPathHints());
+    public void tomlPresetMatchesDocumentedContract() {
+        // Пресет зафиксирован в docs/contracts/value-formats.md: смена toml без смены документа — провал
+        assertEquals(List.of("_at", "_utc"), withEnv(Map.of()).getPathHints());
+    }
+
+    @Test
+    public void envReplacesPreset() {
+        assertEquals(List.of("_ts", "Date"),
+                withEnv(Map.of(FormatSettings.ENV_PATH_HINTS, "_ts, ,Date")).getPathHints(),
+                "env полностью заменяет пресет; элементы тримятся, пустые отбрасываются");
+    }
+
+    @Test
+    public void blankEnvFallsBackToPreset() {
+        assertEquals(List.of("_at", "_utc"), withEnv(Map.of(FormatSettings.ENV_PATH_HINTS, "  ")).getPathHints());
     }
 
     @Test
     public void pathHintsAreUnmodifiable() {
-        assertThrows(UnsupportedOperationException.class,
-                () -> FormatSettings.getInstance().getPathHints().add("_ts"));
-    }
-
-    @Test
-    public void resolvePathHintsEnvOverridesToml() {
-        // env задан — полностью заменяет пресет; элементы тримятся, пустые отбрасываются
-        assertEquals(List.of("_ts", "Date"), FormatSettings.resolvePathHints("_ts, ,Date", List.of("_at", "_utc")));
+        assertThrows(UnsupportedOperationException.class, () -> withEnv(Map.of()).getPathHints().add("_ts"));
     }
 
     @Test

@@ -65,10 +65,18 @@ dependencies {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    options.compilerArgs += ['-Xlint:all']
+    // -classfile: slice ссылается на аннотацию findbugs, которой нет на classpath — шум, не дефект кода
+    options.compilerArgs += ['-Xlint:all', '-Xlint:-classfile']
 }
 test {
     useJUnitPlatform()
+}
+// Сторонние библиотеки тестового classpath на JDK 25: guice (trino-testing) и jol (slice) зовут
+// sun.misc.Unsafe, brotli4j (trino-testing) — System.loadLibrary. Разрешаем явно, иначе JVM
+// печатает WARNING в каждый прогон; на продовый плагин флаги не влияют.
+tasks.withType(Test).configureEach {
+    jvmArgs '--enable-native-access=ALL-UNNAMED',
+            '--sun-misc-unsafe-memory-access=allow'
 }
 
 // =========================================================================
@@ -289,6 +297,8 @@ tasks.register('downloadTrinoCli', Copy) {
 // ReplaceTokens, а не expand(): в файле есть литералы "$oid" и "$.", которые
 // Groovy SimpleTemplateEngine принял бы за выражения.
 processResources {
+    // Версия — явный вход задачи: без него смена distdocVersion не инвалидирует ресурс (stale 1.x в 2.x сборке)
+    inputs.property('distdocVersion', distdocVer)
     filesMatching('app-config.toml') {
         filter(org.apache.tools.ant.filters.ReplaceTokens, tokens: [distdocVersion: distdocVer])
     }

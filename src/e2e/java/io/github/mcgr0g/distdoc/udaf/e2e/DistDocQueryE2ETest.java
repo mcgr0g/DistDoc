@@ -22,6 +22,7 @@ import java.util.Set;
 
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -33,6 +34,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** Проект контракта 2.0; в фазе 5 task01 возвращается к rx-data.schema.json. */
+
+    private static final String SCHEMA_RESOURCE = "rx-data.schema.draft-2.0.json";
     private static final JsonSchema SCHEMA = loadSchema();
 
     @Override
@@ -74,9 +79,24 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
     public void anomalyFlagsPresent() {
         String rx = (String) computeActual("SELECT analyze_json_schema(line) FROM crm_combined").getOnlyValue();
 
-        // Фикстуры ALL содержат все аномалии
-        assertTrue(rx.contains("is_date_part_array"), "отсутствует is_date_part_array: " + rx);
-        assertTrue(rx.contains("is_array_empty"), "отсутствует is_array_empty: " + rx);
+        // Фикстуры ALL содержат все аномалии; в контракте 2.0 — объекты внутри anomalies
+        JsonNode root = readTree(rx);
+        assertTrue(root.at("/$.birth_date[*]/anomalies/is_date_part_array/detected").asBoolean(), "нет is_date_part_array: " + rx);
+        assertTrue(root.at("/$.payment_dates[*]/anomalies/is_array_empty/detected").asBoolean(), "нет is_array_empty: " + rx);
+
+        // created_at: local datetime + plain date -> полиморфизм форматов
+        JsonNode createdAt = root.get("$.created_at");
+        assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\"]", createdAt.get("observed_formats").toString(), "observed_formats: " + rx);
+        assertTrue(createdAt.at("/anomalies/is_polymorphic_format/detected").asBoolean(), "нет is_polymorphic_format: " + rx);
+        assertFalse(root.get("$.customer_rating").has("observed_formats"), "ложный формат на customer_rating: " + rx);
+    }
+
+    private static JsonNode readTree(String rx) {
+        try {
+            return MAPPER.readTree(rx);
+        } catch (Exception e) {
+            throw new RuntimeException("Не удалось распарсить rx-data: " + e.getMessage(), e);
+        }
     }
 
     private Set<ValidationMessage> validate(String reportJson) {
@@ -90,14 +110,14 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
 
     private static JsonSchema loadSchema() {
         try (InputStream is = DistDocQueryE2ETest.class.getClassLoader()
-                .getResourceAsStream("rx-data.schema.json")) {
+                .getResourceAsStream(SCHEMA_RESOURCE)) {
             if (is == null) {
-                throw new IllegalStateException("rx-data.schema.json не найден в ресурсах");
+                throw new IllegalStateException(SCHEMA_RESOURCE + " не найден в ресурсах");
             }
             JsonSchemaFactory factory = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012);
             return factory.getSchema(is);
         } catch (Exception e) {
-            throw new RuntimeException("Не удалось загрузить rx-data.schema.json: " + e.getMessage(), e);
+            throw new RuntimeException("Не удалось загрузить " + SCHEMA_RESOURCE + ": " + e.getMessage(), e);
         }
     }
 

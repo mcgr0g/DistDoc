@@ -99,6 +99,13 @@ public class DistDocDistributedE2ETest extends AbstractTestQueryFramework {
         JsonNode rating = root.get("$.customer_rating");
         assertTrue(rating != null, "отсутствует $.customer_rating");
         assertEquals("DOUBLE", rating.get("type").asText(), "тип customer_rating должен быть DOUBLE");
+
+        // Полиморфизм форматов переживает шаффл: множество форматов — union частичных состояний
+        JsonNode createdAt = root.get("$.created_at");
+        assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\"]", createdAt.get("observed_formats").toString(),
+                "observed_formats created_at после combine");
+        assertTrue(createdAt.at("/anomalies/is_polymorphic_format/detected").asBoolean(),
+                "is_polymorphic_format после combine");
     }
 
     private static String quote(String s) {

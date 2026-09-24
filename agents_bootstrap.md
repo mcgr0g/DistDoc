@@ -17,7 +17,7 @@ graph LR
 Подпись: стрелка Trino↔плагин — вызов UDAF; плагин↔генератор — контракт docs/contracts/rx-data-contract.md.
 
 ## C4 L2 (компоненты плагина)
-17 классов `src/main/java/io/github/mcgr0g/distdoc/udaf/` (включая подпакеты `anomalies/`, `config/` и `formats/`);
+18 классов `src/main/java/io/github/mcgr0g/distdoc/udaf/` (включая подпакеты `anomalies/`, `config/` и `formats/`);
 ресурс `src/main/resources/app-config.toml` — TOML-конфиг плагина: `[app]` (версия схемы), `[trace]` (лимиты, пресет, суффикс) и `[format]` (path hints):
 
 | Класс | Назначение |
@@ -30,14 +30,15 @@ graph LR
 | config/CoreSettings | Секция [app]: версия схемы rx-data (major.minor) |
 | config/TraceSettings | Секция [trace]: лимиты/пресет/суффикс + env-override |
 | config/FormatSettings | Секция [format]: path hints numeric timestamp + env-override |
-| JsonSchemaAnalyzer | Стриминг-парсер (O(1), без DOM) + trace-режим |
+| JsonSchemaAnalyzer | Стриминг-парсер (O(1), без DOM) + trace-режим; сборка отчёта и внутреннего состояния (whitelist) |
 | SchemaState | Состояние схемы (типы, max_length, карта аномалий) |
-| SchemaStateSerializer | Сетевой маршалинг (open-closed, динамические флаги) |
-| PathMetrics | Метрики JSONPath-путей (включая trace_ids) |
+| SchemaStateSerializer | Сетевой маршалинг состояния (fail-fast, делегирует разбор анализатору) |
+| PathMetrics | Метрики пути: типы, форматы, аномалии (монотонно), trace scopes |
+| TraceEvidence | Bounded min-set пар {id, id_key} одного trace scope |
 | anomalies/AnomalyDetector | Интерфейс-стратегия анализа массивов |
 | anomalies/ArrayAnomalyDetector | Реализация стратегии (флаги аномалий) |
 | anomalies/ArrayContext | Неизменяемый DTO-снимок для стратегии |
-| formats/ValueFormat | Закрытый словарь написаний дат (порядок = приоритет, ADR-0006) |
+| formats/ValueFormat | Закрытый словарь написаний дат (порядок = приоритет, docs/contracts/value-formats.md) |
 | formats/FormatDetector | Pure-детектор: сканер строк, Unix-время по контексту пути |
 
 testFixtures: 9 классов генератора хаос-данных (chaos/ + chaos/apps/), fixtures.toml, fixtures.env — сценарии из docs/testing/fixtures.md.
@@ -50,12 +51,14 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 | agents.md | правила агента | в начале каждой сессии |
 | agents_bootstrap.md | эта карта | при входе в незнакомую область |
 | docs/contracts/rx-data-contract.md | общий контракт rx-data | при изменении вывода плагина или формата .rx.json |
-| docs/adr/0001…0006 | решения (стриминг, стратегия аномалий, сериализация, trace+ShadowDoc, e2e sourceSet, форматы значений) | при изменении архитектурно значимого поведения |
+| docs/contracts/value-formats.md | форматы дат: словарь, правила, path hints, таблица примеров | при работе с `observed_formats` и `FormatDetector` |
+| docs/adr/0000-index.md | индекс действующих ADR (0001…0006) и где их решения актуальны | в последнюю очередь — только для «почему так решили» |
 | docs/project-brief.md | бизнес-контекст и требования | при вопросах «зачем» |
 | docs/patterns/plugin.md | 5 паттернов реализации | при правках рантайма плагина |
 | docs/testing/local-cluster.md | sandbox-стенд (mise + Trino Memory Connector) + ShadowDoc | при работе со стендом |
 | etc/shadowdoc/ | shadow-кластер ShadowDoc (compose, trino-config, catalog/remote.properties, fetch-trino2trino.sh, .env.example) | при прод-интроспекции без установки плагина |
 | docs/testing/fixtures.md | контракт хаос-фикстур и 10 полей | при изменении генерации данных |
+| docs/testing/fixture-matrix.md | ожидания каждой таблицы фикстур, golden-map `crm_combined` | при изменении фикстур и assertions |
 | docs/testing/tracing.md | трассировка идентификаторов (trace_ids, режимы, конфиг) | при работе с trace-режимом UDAF |
 | docs/testing/prod-access.md | прод-доступ (заглушка) | при работе с продом |
 | docs/guides/demo.md | сценарий демонстрации | при подготовке демо |

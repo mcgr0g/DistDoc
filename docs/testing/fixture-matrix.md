@@ -3,29 +3,27 @@
 Документ — единственное место, где записано, **что** должна показать каждая таблица
 хаос-фикстур. `src/testFixtures/resources/fixtures.toml` остаётся исполняемым конфигом,
 `docs/testing/fixtures.md` описывает поля и стенд. Правила распознавания форматов —
-[ADR-0006](../adr/0006-format-detection.md); форма отчёта — контракт rx-data 2.0
-(проект: `docs/contracts/rx-data.schema.draft-2.0.json`).
-
-> Статус: ожидания для контракта 2.0 (фаза 1). Таблицы, помеченные «новая», и
-> переименования появятся в фазе 3; до этого `fixtures.toml` содержит старые имена.
+[value-formats.md](../contracts/value-formats.md); форма отчёта —
+[rx-data-contract.md](../contracts/rx-data-contract.md).
 
 ## Как читать
 
 - **Префикс таблицы — ось проверки**: `fmt_` — один формат/тип на одном поле;
   `arr_` — одна структурная аномалия массива; `pol_` — полиморфизм форматов и его
   взаимодействие с другой осью; `trace_` — источник трассировки и merge.
-  `crm_combined` и `clean` не переименовываются.
+  Без префикса: `crm_combined` — интеграционная таблица, `clean` — эталон.
 - После префикса — имя проверяемого поля и вариант: `fmt_created_at_unix_millis`.
 - **Декартово произведение не строится**: новая ось добавляет атомарные таблицы и
   только те комбинации, где оси взаимодействуют.
 - Проверяются смысловые множества (пути, форматы, имена аномалий, `type`), а не
   полный JSON snapshot и не порядок путей.
-- `type` в `fixtures.toml` — режим генератора (`AnomalyScenario`), а не ось.
+- «Режим» — значение `type` в `fixtures.toml` (`AnomalyScenario`), а не ось.
 
-## 0. Фон базовой записи
+## 0. Базовая запись
 
-`ForgottenMigrationsSource.generateBaseRecord` одинаков для всех таблиц; мутации
-режима меняют только своё поле. Если режим не трогает поле, ожидается фон:
+`ForgottenMigrationsSource.generateBaseRecord` одинакова для всех таблиц; режим
+мутирует только свои поля. Поле, которое режим не трогает, даёт в отчёте строку
+этой таблицы:
 
 | Путь | `type` | `observed_formats` | `anomalies` |
 |---|---|---|---|
@@ -41,36 +39,36 @@
 | `$.version.$numberLong` | `INTEGER` | — (слог `version`, нет hint) | — |
 | `$.doc_meta.@type` / `$.doc_meta.@version` | `VARCHAR` / `INTEGER` | — | — |
 
-Фон — это одновременно ожидание таблицы `clean`. Отсутствие `observed_formats` на
-`$.customer_rating`, `$.version.$numberLong`, `$.doc_meta.@version` — обязательная
-negative-проверка: числа без контекста датами не становятся.
+Базовая запись без мутаций — это и есть ожидание таблицы `clean`. Отсутствие
+`observed_formats` на `$.customer_rating`, `$.version.$numberLong`,
+`$.doc_meta.@version` — обязательная negative-проверка: числа без контекста датами
+не становятся.
 
 ## 1. Атомарные таблицы
 
-«Режим» — значение `type` в `fixtures.toml`. Ниже — только отличия от фона и
-обязательные assertions.
+Ниже — только отличия от базовой записи и обязательные assertions.
 
-| Таблица | Было | Режим | Поле | Вход | Ожидаемый report |
-|---|---|---|---|---|---|
-| `clean` | `clean` | `clean` | все | базовая запись | ровно фон (раздел 0); ни одной `is_polymorphic_format` |
-| `fmt_created_at_local` | новая | `clean` | `created_at` | `2026-07-23T01:15:00` | `$.created_at`: `LOCAL_DATETIME`, без `is_polymorphic_format` |
-| `fmt_created_at_unix_millis` | `debug_date_unix` | `date_at_unix` | `created_at` | `1784769300000` | `$.created_at`: `type=INTEGER`, `max_length=0`, `UNIX_MILLIS`; `VARCHAR` отсутствует |
-| `fmt_created_at_date_only` | `debug_date_plain` | `date_as_plain` | `created_at` | `2026-07-23` | `$.created_at`: `DATE_ONLY`, без `is_polymorphic_format` |
-| `fmt_updated_at_offset` | новая | `clean` | `updated_at` | `2026-07-23T01:15:00+03:00` | `$.updated_at`: `OFFSET_DATETIME` (не `UTC_DATETIME`) |
-| `fmt_promo_expiry_date` | новая | `clean` | `promo_expiry_date` | `2026-08-01` | `$.promo_expiry_date`: `DATE_ONLY` без hint (строковым форматам hint не нужен) |
-| `fmt_customer_rating_promotion` | новая | `rating_promotion` (новый) | `customer_rating` | чётный индекс `INTEGER`, нечётный `DOUBLE` | `$.customer_rating`: `type=DOUBLE`, нет `observed_formats`, нет `anomalies` |
-| `arr_birth_date_parts` | `debug_date_part` | `date_as_array` | `birth_date` | `["1990","05","15"]` | `$.birth_date[*]`: `is_date_part_array` + `is_flat_string_array`, нет `observed_formats`; путь `$.birth_date` отсутствует |
-| `arr_payment_dates_empty` | `debug_empty_arrays` | `empty_array` | `payment_dates` | `[]` | `$.payment_dates[*]`: `type=ARRAY`, `is_array_empty`, нет `observed_formats` |
+| Таблица | Режим | Поле | Вход | Ожидаемый report |
+|---|---|---|---|---|
+| `clean` | `clean` | все | базовая запись | ровно раздел 0; ни одной `is_polymorphic_format` |
+| `fmt_created_at_local` | `clean` | `created_at` | `2026-07-23T01:15:00` | `$.created_at`: `LOCAL_DATETIME`, без `is_polymorphic_format` |
+| `fmt_created_at_unix_millis` | `date_at_unix` | `created_at` | `1784769300000` | `$.created_at`: `type=INTEGER`, `max_length=0`, `UNIX_MILLIS`; `VARCHAR` отсутствует |
+| `fmt_created_at_date_only` | `date_as_plain` | `created_at` | `2026-07-23` | `$.created_at`: `DATE_ONLY`, без `is_polymorphic_format` |
+| `fmt_updated_at_offset` | `clean` | `updated_at` | `2026-07-23T01:15:00+03:00` | `$.updated_at`: `OFFSET_DATETIME` (не `UTC_DATETIME`) |
+| `fmt_promo_expiry_date` | `clean` | `promo_expiry_date` | `2026-08-01` | `$.promo_expiry_date`: `DATE_ONLY` без hint (строковым форматам hint не нужен) |
+| `fmt_customer_rating_promotion` | `rating_promotion` | `customer_rating` | чётный индекс `INTEGER`, нечётный `DOUBLE` | `$.customer_rating`: `type=DOUBLE`, нет `observed_formats`, нет `anomalies` |
+| `arr_birth_date_parts` | `date_as_array` | `birth_date` | `["1990","05","15"]` | `$.birth_date[*]`: `is_date_part_array` + `is_flat_string_array`, нет `observed_formats`; путь `$.birth_date` отсутствует |
+| `arr_payment_dates_empty` | `empty_array` | `payment_dates` | `[]` | `$.payment_dates[*]`: `type=ARRAY`, `is_array_empty`, нет `observed_formats` |
 
 Три таблицы на режиме `clean` (`fmt_created_at_local`, `fmt_updated_at_offset`,
 `fmt_promo_expiry_date`) — короткие repro с одним фокусным полем: базовая запись уже
-даёт нужное значение, новый режим генератора не нужен.
+даёт нужное значение.
 
 ## 2. Комбинационные таблицы
 
-Все новые. Группы внутри таблицы выбираются по `index`, а не `random`.
+Группы внутри таблицы выбираются по `index`, а не `random`.
 
-| Таблица | Режим (новый) | Группы по `index` | Ожидаемый report |
+| Таблица | Режим | Группы по `index` | Ожидаемый report |
 |---|---|---|---|
 | `pol_created_at_formats` | `pol_created_at_formats` | `created_at`: `i%3==0` local, `1` date-only, `2` offset | `$.created_at`: `observed_formats=[DATE_ONLY, LOCAL_DATETIME, OFFSET_DATETIME]`, `is_polymorphic_format`, `type=VARCHAR`, `max_length=25` |
 | `pol_created_at_with_arrays` | `pol_created_at_with_arrays` | `created_at` как выше; `birth_date` parts при `i%2==1`; `payment_dates=[]` при `i%5==0` | как выше + `$.birth_date[*]`: `is_date_part_array`, `is_flat_string_array`; `$.payment_dates[*]`: `is_array_empty`, `is_flat_string_array`, `DATE_ONLY`; в trace-режиме у каждой аномалии свой `trace`, независимый от `path_trace` |
@@ -93,8 +91,7 @@ negative-проверка: числа без контекста датами н�
 ## 4. `crm_combined` и golden-check
 
 `crm_combined` (режим `all`, `count = 100`) — небольшая интеграционная таблица, а не
-полная матрица. Режим `all` становится детерминированным: группа выбирается по
-`index`, как уже сделано для `surrogate_pk`.
+полная матрица. Режим `all` детерминирован: группа выбирается по `index`.
 
 | Группа | Условие | Мутация |
 |---|---|---|
@@ -105,7 +102,7 @@ negative-проверка: числа без контекста датами н�
 | `birth_date_parts` | `i%2==1` | `["1990","05","15"]` |
 | `payment_dates_empty` | `i%3==0` | `[]` |
 | `customer_rating` | `i%5 < 2` | `DOUBLE` |
-| `surrogate_pk` | `i%2==0` | `sp-…` (без изменений) |
+| `surrogate_pk` | `i%2==0` | `sp-…` |
 
 Expectation-map (golden-check обычного отчёта `combined.rx.json`):
 
@@ -132,10 +129,10 @@ detector-а — ответственность unit/E2E.
 
 | Уровень | Что | Источник ожиданий |
 |---|---|---|
-| unit `FormatDetectorTest` | сканер, числа, hints | ADR-0006, приложение А |
-| unit `FormatSettingsTest` | `[format]` + env | ADR-0006, раздел 4 |
+| unit `FormatDetectorTest` | сканер, числа, hints | value-formats.md, раздел 6 |
+| unit `FormatSettingsTest` | `[format]` + env | value-formats.md, раздел 3.1 |
 | unit `JsonSchemaAnalyzerTest` | разделы 0–2 на строках `ChaosDataGenerator.generateSingleLine` | этот документ |
-| unit merge/serializer | алгебра merge, round-trip | ADR-0006, разделы 7–8 |
+| unit `SchemaStateSerializerTest` | алгебра merge, round-trip, пропуск чужих путей | docs/testing/tracing.md, docs/patterns/plugin.md (паттерн 5) |
 | E2E `src/e2e/` | раздел 3 (trace, распределённый merge), раздел 4 in-process | этот документ |
 | Docker `lc-verify` | раздел 4 через `fixtures.toml → lc-gen → lc-load` | этот документ |
 
@@ -144,4 +141,5 @@ detector-а — ответственность unit/E2E.
 Пакет обязателен целиком: элемент enum/константа → positive/negative cases detector-а
 → assertion в analyzer report → merge/serializer round-trip (если поле в state) →
 атомарная таблица (если нужен ручной repro) → комбинация (только при взаимодействии
-осей) → строка в этом документе → контракт и ADR при изменении семантики.
+осей) → строка в этом документе → value-formats.md / контракт при изменении семантики
+(ADR — только для нового значимого решения).

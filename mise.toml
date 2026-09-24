@@ -124,7 +124,7 @@ run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
 """
 
 [tasks.lc-trace]
-description = "Анализ схемы crm_combined с трассировкой trace_ids (пресет) — отчёт build/dev-lakehouse/schema/combined.trace.rx.json"
+description = "Анализ схемы crm_combined с трассировкой path_trace и per-anomaly trace (пресет) — отчёт build/dev-lakehouse/schema/combined.trace.rx.json"
 depends = ["lc-load"]
 env = { TRINO_CONFIG = "{{config_root}}/etc/trino-cli.properties", TRACE_ARG = ", trace()", LC_REPORT = "combined.trace.rx.json" }
 # Явный режим по полю 1 уровня (поле присутствует в ~50% строк): раскомментировать вместо строки выше.

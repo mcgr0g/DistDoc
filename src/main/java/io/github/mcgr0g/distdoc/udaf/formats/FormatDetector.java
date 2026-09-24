@@ -3,7 +3,7 @@ package io.github.mcgr0g.distdoc.udaf.formats;
 import java.util.List;
 
 /**
- * Pure-детектор написаний значений (docs/adr/0006-format-detection.md).
+ * Pure-детектор написаний значений (правила и таблица примеров — docs/contracts/value-formats.md).
  *
  * <p>Вызывается на hot path для каждого скаляра, поэтому без regex, {@code java.time},
  * исключений и аллокаций: строки — посимвольный сканер с целочисленной проверкой

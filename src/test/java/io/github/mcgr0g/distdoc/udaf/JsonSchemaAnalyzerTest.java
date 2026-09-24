@@ -3,379 +3,424 @@ package io.github.mcgr0g.distdoc.udaf;
 import io.github.mcgr0g.distdoc.chaos.AnomalyScenario;
 import io.github.mcgr0g.distdoc.chaos.ChaosDataGenerator;
 import io.github.mcgr0g.distdoc.chaos.sources.*;
+import io.github.mcgr0g.distdoc.udaf.TraceEvidence.Pair;
 import io.github.mcgr0g.distdoc.udaf.anomalies.AnomalyDetector;
+import io.github.mcgr0g.distdoc.udaf.formats.ValueFormat;
 import io.airlift.slice.Slices;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_POLYMORPHIC_FORMAT;
+import static io.github.mcgr0g.distdoc.udaf.formats.ValueFormat.*;
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Тесты анализатора: типы, форматы (docs/testing/fixture-matrix.md, разделы 0–1),
+ * аномалии и trace (docs/testing/tracing.md).
+ */
 public class JsonSchemaAnalyzerTest {
 
-    @Test
-    public void testCleanDataAndDeEscaping() throws Exception {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ForgottenMigrationsSource SOURCE = new ForgottenMigrationsSource();
+    private static final String PRESET = "";
+
+    // ------------------------------------------------------------------ helpers
+
+    /** Строка фикстуры; checked-исключение генератора оборачивается (тест падает с причиной). */
+    private static String line(AnomalyScenario scenario, long index) {
+        try {
+            return ChaosDataGenerator.generateSingleLine(SOURCE, scenario, index);
+        } catch (Exception e) {
+            throw new IllegalStateException("Генератор фикстур не выдал строку " + scenario + "/" + index, e);
+        }
+    }
+
+    private static void feed(JsonSchemaAnalyzer analyzer, AnomalyScenario scenario, long index, String traceArg) {
+        feed(analyzer, line(scenario, index), traceArg);
+    }
+
+    private static void feed(JsonSchemaAnalyzer analyzer, String json, String traceArg) {
+        ByteArrayInputStream in = new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8));
+        if (traceArg == null) {
+            analyzer.analyze(in);
+        } else {
+            analyzer.analyze(in, Slices.utf8Slice(traceArg));
+        }
+    }
+
+    private static JsonSchemaAnalyzer analyzed(AnomalyScenario scenario, long index, String traceArg) {
         JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
+        feed(analyzer, scenario, index, traceArg);
+        return analyzer;
+    }
 
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1);
+    private static PathMetrics path(JsonSchemaAnalyzer analyzer, String path) {
+        PathMetrics metrics = analyzer.getSchemaMap().get(path);
+        assertNotNull(metrics, "Путь " + path + " отсутствует");
+        return metrics;
+    }
 
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
-        Map<String, PathMetrics> schema = analyzer.getSchemaMap();
+    private static List<Pair> pathTrace(JsonSchemaAnalyzer analyzer, String path) {
+        TraceEvidence evidence = path(analyzer, path).getPathTrace();
+        assertNotNull(evidence, "path_trace для " + path + " не собран");
+        return evidence.items();
+    }
 
-        // Проверяем корректность сборки BSON-пути верхнего уровня
-        assertTrue(schema.containsKey("$._id.$oid"), "Базовый BSON-путь $._id.$oid не найден");
+    private static List<Pair> anomalyTrace(JsonSchemaAnalyzer analyzer, String path, String anomaly) {
+        TraceEvidence evidence = path(analyzer, path).getAnomalyTrace().get(anomaly);
+        assertNotNull(evidence, "trace аномалии " + anomaly + " для " + path + " не собран");
+        return evidence.items();
+    }
+
+    private static String oid(long index) {
+        return String.format("60b8d29f1a4c8b%010d", index);
+    }
+
+    // ------------------------------------------------------------------ типы и структура
+
+    @Test
+    public void testCleanDataAndDeEscaping() {
+        Map<String, PathMetrics> schema = analyzed(AnomalyScenario.CLEAN, 1, null).getSchemaMap();
+
         assertEquals("VARCHAR", schema.get("$._id.$oid").getFinalType());
-
-        // Проверяем успешное деэкранирование и изоляцию рекурсивного стека путей
-        assertTrue(schema.containsKey("$.metadata_encoded.user_agent"), "Путь $.metadata_encoded.user_agent внутри экранированной строки не распарсился");
-        assertEquals("VARCHAR", schema.get("$.metadata_encoded.user_agent").getFinalType());
-        assertTrue(schema.containsKey("$.metadata_encoded.retry_count"), "Путь $.metadata_encoded.retry_count не найден");
+        assertEquals("VARCHAR", schema.get("$.metadata_encoded.user_agent").getFinalType(),
+                "Путь внутри экранированной строки не распарсился");
         assertEquals("INTEGER", schema.get("$.metadata_encoded.retry_count").getFinalType());
-
-        // Спецсимвольные BSON/@-поля
-        assertTrue(schema.containsKey("$.version.$numberLong"), "Путь $.version.$numberLong не найден");
         assertEquals("INTEGER", schema.get("$.version.$numberLong").getFinalType());
-        assertTrue(schema.containsKey("$.doc_meta.@type"), "Путь $.doc_meta.@type не найден");
         assertEquals("VARCHAR", schema.get("$.doc_meta.@type").getFinalType());
-        assertTrue(schema.containsKey("$.doc_meta.@version"), "Путь $.doc_meta.@version не найден");
         assertEquals("INTEGER", schema.get("$.doc_meta.@version").getFinalType());
-
-        // Чистый сценарий: customer_rating — однородный INTEGER (без подмешивания)
         assertEquals("INTEGER", schema.get("$.customer_rating").getFinalType());
     }
 
     @Test
-    public void testEmptyArrayAnomaly() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // Включаем сценарий пустых массивов
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.EMPTY_ARRAY, 1);
-
-
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
-        PathMetrics arrayMetrics = analyzer.getSchemaMap().get("$.payment_dates[*]");
-
-        assertNotNull(arrayMetrics, "Путь $.payment_dates[*] вернул null");
-        assertTrue(arrayMetrics.getAnomaly(AnomalyDetector.METRIC_IS_EMPTY), "Аномалия пустого массива не зафиксирована");
-        assertFalse(arrayMetrics.getAnomaly(AnomalyDetector.METRIC_IS_DATE_PART), "Ложное срабатывание флага is_date_part_array на пустом массиве");
+    public void testEmptyArrayAnomaly() {
+        PathMetrics metrics = path(analyzed(AnomalyScenario.EMPTY_ARRAY, 1, null), "$.payment_dates[*]");
+        assertTrue(metrics.hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY), "Аномалия пустого массива не зафиксирована");
+        assertFalse(metrics.hasAnomaly(AnomalyDetector.METRIC_IS_DATE_PART));
+        assertEquals("ARRAY", metrics.getFinalType());
+        assertTrue(metrics.getFormats().isEmpty(), "Пустой массив не даёт форматов");
     }
 
     @Test
-    public void testDateAsArrayAnomaly() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // Включаем сценарий разорванных компонентов дат
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.DATE_AS_ARRAY, 1);
-
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
-        PathMetrics arrayMetrics = analyzer.getSchemaMap().get("$.birth_date[*]");
-
-        assertNotNull(arrayMetrics, "Путь $.birth_date[*] вернул null");
-        assertTrue(arrayMetrics.getAnomaly(AnomalyDetector.METRIC_IS_DATE_PART), "Аномалия частиц дат в массиве не зафиксирована");
-        assertFalse(arrayMetrics.getAnomaly(AnomalyDetector.METRIC_IS_EMPTY), "Ложное срабатывание флага is_array_empty на заполненном массиве");
+    public void testDateAsArrayAnomaly() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.DATE_AS_ARRAY, 1, null);
+        PathMetrics metrics = path(analyzer, "$.birth_date[*]");
+        assertTrue(metrics.hasAnomaly(AnomalyDetector.METRIC_IS_DATE_PART));
+        assertTrue(metrics.hasAnomaly(AnomalyDetector.METRIC_IS_STRING_ARRAY));
+        assertFalse(metrics.hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY));
+        assertTrue(metrics.getFormats().isEmpty(), "'1990' — частица, а не формат");
+        assertFalse(analyzer.getSchemaMap().containsKey("$.birth_date"), "скалярный путь birth_date в DATE_AS_ARRAY не появляется");
     }
 
     @Test
-    public void testDateAtUnixScenario() throws Exception {
+    public void testAllChaosAggregation() {
         JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.DATE_AT_UNIX, 1);
-
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
-        PathMetrics metrics = analyzer.getSchemaMap().get("$.created_at");
-
-        assertNotNull(metrics, "Путь $.created_at вернул null");
-        assertEquals("INTEGER", metrics.getFinalType());
-    }
-
-    @Test
-    public void testDateAsPlainScenario() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.DATE_AS_PLAIN, 1);
-
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
-        PathMetrics metrics = analyzer.getSchemaMap().get("$.created_at");
-
-        assertNotNull(metrics, "Путь $.created_at вернул null");
-        assertEquals("VARCHAR", metrics.getFinalType());
-    }
-
-    @Test
-    public void testAllChaosAggregation() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // Имитируем распределенный поток данных из DWH (100 строк в режиме ALL)
         for (int i = 0; i < 100; i++) {
-            String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.ALL, i);
-            analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
+            feed(analyzer, AnomalyScenario.ALL, i, null);
         }
+        assertTrue(path(analyzer, "$.payment_dates[*]").hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY));
+        assertTrue(path(analyzer, "$.birth_date[*]").hasAnomaly(AnomalyDetector.METRIC_IS_DATE_PART));
 
-        PathMetrics paymentMetrics = analyzer.getSchemaMap().get("$.payment_dates[*]");
-        assertNotNull(paymentMetrics, "Путь $.payment_dates[*] вернул null при агрегации");
-        assertTrue(paymentMetrics.getAnomaly(AnomalyDetector.METRIC_IS_EMPTY), "Флаг is_array_empty не взлетел при агрегации хаоса");
+        // Числовой подъём INTEGER + DOUBLE -> DOUBLE; это не format anomaly
+        PathMetrics rating = path(analyzer, "$.customer_rating");
+        assertEquals("DOUBLE", rating.getFinalType());
+        assertTrue(rating.getFormats().isEmpty());
+        assertFalse(rating.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
 
-        PathMetrics birthMetrics = analyzer.getSchemaMap().get("$.birth_date[*]");
-        assertNotNull(birthMetrics, "Путь $.birth_date[*] вернул null при агрегации");
-        assertTrue(birthMetrics.getAnomaly(AnomalyDetector.METRIC_IS_DATE_PART), "Флаг is_date_part_array не взлетел при агрегации хаоса");
-
-        // Числовой подъём: INTEGER + DOUBLE на одном пути -> DOUBLE (без потери данных)
-        assertEquals("DOUBLE", analyzer.getSchemaMap().get("$.customer_rating").getFinalType());
+        // created_at: local datetime + plain date -> полиморфизм
+        PathMetrics createdAt = path(analyzer, "$.created_at");
+        assertEquals(EnumSet.of(DATE_ONLY, LOCAL_DATETIME), createdAt.getFormats());
+        assertTrue(createdAt.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
     }
 
-    // ------------------------------------------------------------------
-    // Трассировка идентификаторов (trace_ids)
-    // ------------------------------------------------------------------
+    // ------------------------------------------------------------------ форматы (fixture-matrix.md, разделы 0–1)
 
     @Test
-    public void testTraceExplicitByFieldName() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
+    public void testCleanBackgroundFormats() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.CLEAN, 1, null);
 
-        // trace('created_at'): явный режим — id = значение поля created_at из строки-первопроходца
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1);
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice("created_at"));
+        assertEquals(Set.of(LOCAL_DATETIME), path(analyzer, "$.created_at").getFormats());
+        assertEquals(Set.of(OFFSET_DATETIME), path(analyzer, "$.updated_at").getFormats(), "+03:00 — OFFSET, не UTC");
+        assertEquals(Set.of(DATE_ONLY), path(analyzer, "$.promo_expiry_date").getFormats(), "строковому формату hint не нужен");
+        assertEquals(Set.of(DATE_ONLY), path(analyzer, "$.birth_date").getFormats());
+        assertEquals(Set.of(DATE_ONLY), path(analyzer, "$.payment_dates[*]").getFormats(), "формат элементов пишется на путь массива");
 
-        assertEquals(
-                List.of("2026-07-23T01:15:00"),
-                analyzer.getSchemaMap().get("$.created_at").getTraceIds(),
-                "trace_ids узла $.created_at не содержат значение поля из строки-источника");
+        // Числа без контекста датами не становятся
+        for (String p : List.of("$.customer_rating", "$.version.$numberLong", "$.doc_meta.@version",
+                "$.metadata_encoded.retry_count", "$._id.$oid", "$.doc_meta.@type", "$.metadata_encoded.user_agent")) {
+            assertTrue(path(analyzer, p).getFormats().isEmpty(), "ложный формат на " + p);
+        }
+        analyzer.getSchemaMap().forEach((p, m) ->
+                assertFalse(m.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT), "ложный полиморфизм на " + p));
     }
 
     @Test
-    public void testTraceExplicitMissingFieldGetsEmptyMarker() throws Exception {
+    public void testDateAtUnixScenario() {
+        PathMetrics metrics = path(analyzed(AnomalyScenario.DATE_AT_UNIX, 1, null), "$.created_at");
+        assertEquals("INTEGER", metrics.getFinalType(), "без ложного VARCHAR");
+        assertEquals(0, metrics.getMaxLength());
+        assertEquals(Set.of(UNIX_MILLIS), metrics.getFormats());
+    }
+
+    @Test
+    public void testDateAsPlainScenario() {
+        PathMetrics metrics = path(analyzed(AnomalyScenario.DATE_AS_PLAIN, 1, null), "$.created_at");
+        assertEquals("VARCHAR", metrics.getFinalType());
+        assertEquals(Set.of(DATE_ONLY), metrics.getFormats());
+        assertFalse(metrics.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
+    }
+
+    @Test
+    public void testPolymorphicTransitionIsMonotonic() {
         JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
 
-        // trace('doc_code'): поля нет в документе — маркер "" (литеральный фолбэк удалён)
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1);
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice("doc_code"));
+        feed(analyzer, AnomalyScenario.CLEAN, 0, null);
+        assertFalse(path(analyzer, "$.created_at").hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT), "один формат — не аномалия");
 
-        PathMetrics metrics = analyzer.getSchemaMap().get("$.customer_rating");
-        assertEquals(
-                List.of(""),
-                metrics.getTraceIds(),
-                "Новый узел не получил пустой маркер при отсутствии явного поля");
-        assertEquals(
-                "",
-                metrics.getTraceIdKey(),
-                "trace_id_key должен быть пустым маркером при отсутствии явного поля");
+        feed(analyzer, AnomalyScenario.DATE_AS_PLAIN, 1, null);
+        assertTrue(path(analyzer, "$.created_at").hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT), "второй формат зажигает аномалию");
+
+        feed(analyzer, AnomalyScenario.CLEAN, 2, null);
+        feed(analyzer, AnomalyScenario.DATE_AT_UNIX, 3, null);
+        PathMetrics metrics = path(analyzer, "$.created_at");
+        assertTrue(metrics.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT), "однородные строки аномалию не сбрасывают");
+        assertEquals(List.of(DATE_ONLY, LOCAL_DATETIME, UNIX_MILLIS), new ArrayList<>(metrics.getFormats()),
+                "порядок форматов — порядок объявления enum");
+    }
+
+    @Test
+    public void testPlainStringDoesNotAddOrRemoveFormat() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, "{\"created_at\": \"2026-07-23\"}", null);
+        feed(analyzer, "{\"created_at\": \"not-a-date\"}", null);
+        feed(analyzer, "{\"created_at\": \"2026-02-30\"}", null);
+        PathMetrics metrics = path(analyzer, "$.created_at");
+        assertEquals(Set.of(DATE_ONLY), metrics.getFormats());
+        assertFalse(metrics.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
+    }
+
+    @Test
+    public void testNumbersNeedContext() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, "{\"order_count\": 1784769300000, \"amount\": 1784769300.5, \"sync_utc\": 1784769300.5,"
+                + " \"closed_at\": 1784769300, \"big_at\": 123456789012345678901234567890}", null);
+
+        assertTrue(path(analyzer, "$.order_count").getFormats().isEmpty(), "счётчик без hint");
+        assertTrue(path(analyzer, "$.amount").getFormats().isEmpty(), "деньги без hint");
+        assertEquals(Set.of(UNIX_SECONDS), path(analyzer, "$.sync_utc").getFormats());
+        assertEquals(Set.of(UNIX_SECONDS), path(analyzer, "$.closed_at").getFormats());
+        assertTrue(path(analyzer, "$.big_at").getFormats().isEmpty(), "вне диапазона long формат не получает");
+    }
+
+    @Test
+    public void testBsonDateIsScalarLeaf() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, "{\"doc\": {\"$date\": {\"$numberLong\": \"1784769300000\"}},"
+                + " \"legacy\": {\"$date\": 1784769300000}, \"relaxed\": {\"$date\": \"2026-07-23T01:15:00Z\"}}", null);
+
+        PathMetrics canonical = path(analyzer, "$.doc.$date.$numberLong");
+        assertEquals("VARCHAR", canonical.getFinalType());
+        assertEquals(Set.of(UNIX_MILLIS), canonical.getFormats(), "canonical Extended JSON без hint");
+        assertEquals(Set.of(UNIX_MILLIS), path(analyzer, "$.legacy.$date").getFormats());
+        assertEquals(Set.of(UTC_DATETIME), path(analyzer, "$.relaxed.$date").getFormats());
+        assertFalse(analyzer.getSchemaMap().containsKey("$.doc"), "формат не поднимается к родителю");
+    }
+
+    @Test
+    public void testScalarAndArrayOnSamePathAreSeparate() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, AnomalyScenario.CLEAN, 0, null);
+        feed(analyzer, AnomalyScenario.DATE_AS_ARRAY, 1, null);
+        assertEquals(Set.of(DATE_ONLY), path(analyzer, "$.birth_date").getFormats());
+        assertTrue(path(analyzer, "$.birth_date[*]").getFormats().isEmpty());
+    }
+
+    @Test
+    public void testPolymorphicAppearsOnlyAfterMerge() {
+        JsonSchemaAnalyzer worker1 = analyzed(AnomalyScenario.CLEAN, 0, null);
+        JsonSchemaAnalyzer worker2 = analyzed(AnomalyScenario.DATE_AS_PLAIN, 1, null);
+        assertFalse(path(worker1, "$.created_at").hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
+        assertFalse(path(worker2, "$.created_at").hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
+
+        worker1.merge(worker2);
+        assertTrue(path(worker1, "$.created_at").hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
+    }
+
+    // ------------------------------------------------------------------ форма отчёта 2.0
+
+    @Test
+    public void testReportShapeNormalMode() throws Exception {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, AnomalyScenario.CLEAN, 0, null);
+        feed(analyzer, AnomalyScenario.EMPTY_ARRAY, 1, null);
+        feed(analyzer, AnomalyScenario.DATE_AS_PLAIN, 2, null);
+        JsonNode root = MAPPER.readTree(analyzer.buildJsonReport());
+
+        assertEquals("2.0", root.get("schema_version").asText());
+
+        JsonNode createdAt = root.get("$.created_at");
+        assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\"]", createdAt.get("observed_formats").toString());
+        assertEquals("{\"is_polymorphic_format\":{\"detected\":true}}", createdAt.get("anomalies").toString());
+
+        JsonNode payment = root.get("$.payment_dates[*]");
+        assertEquals("{\"is_array_empty\":{\"detected\":true},\"is_flat_string_array\":{\"detected\":true}}",
+                payment.get("anomalies").toString(), "аномалии — объекты, отсортированы по имени");
+
+        JsonNode rating = root.get("$.customer_rating");
+        assertFalse(rating.has("observed_formats"), "0 форматов — ключа нет");
+        assertFalse(rating.has("anomalies"), "0 аномалий — ключа нет");
 
         String report = analyzer.buildJsonReport();
-        assertTrue(report.contains("\"trace_ids\":[\"\"]"), "trace_ids не содержит пустой маркер");
-        assertTrue(report.contains("\"trace_id_key\":\"\""), "trace_id_key не содержит пустой маркер");
-    }
-
-    @Test
-    public void testTracePresetByOid() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // trace(): пресет-режим — id = значение _id.$oid (первый ранг пресета)
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1);
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice(""));
-
-        assertEquals(
-                List.of("60b8d29f1a4c8b0000000001"),
-                analyzer.getSchemaMap().get("$.customer_rating").getTraceIds(),
-                "Пресет-режим не подобрал BSON-id _id.$oid для нового узла");
-    }
-
-    @Test
-    public void testTraceIdsLimit() throws Exception {
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // Имитация кластера: три воркера, каждый видит свою строку-первопроходца (разные BSON-id по index)
-        JsonSchemaAnalyzer worker1 = new JsonSchemaAnalyzer();
-        JsonSchemaAnalyzer worker2 = new JsonSchemaAnalyzer();
-        JsonSchemaAnalyzer worker3 = new JsonSchemaAnalyzer();
-        for (int i = 0; i < 3; i++) {
-            String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, i);
-            JsonSchemaAnalyzer worker = (i == 0) ? worker1 : (i == 1) ? worker2 : worker3;
-            worker.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice(""));
+        for (String legacy : List.of("path_trace", "\"trace\"", "trace_ids", "trace_id_key", "format_trace")) {
+            assertFalse(report.contains(legacy), "в обычном режиме нет " + legacy);
         }
+    }
 
-        // Сливаем воркеров: union непустых сортируется, лимит max_ids=2 оставляет первые два
+    @Test
+    public void testReportPathsAreLexicographic() throws Exception {
+        JsonNode root = MAPPER.readTree(analyzed(AnomalyScenario.ALL, 0, null).buildJsonReport());
+        List<String> keys = new ArrayList<>();
+        Iterator<String> it = root.fieldNames();
+        it.next(); // schema_version — первый
+        it.forEachRemaining(keys::add);
+        List<String> sorted = new ArrayList<>(keys);
+        sorted.sort(null);
+        assertEquals(sorted, keys);
+    }
+
+    // ------------------------------------------------------------------ trace: источник id
+
+    @Test
+    public void testTraceExplicitByFieldName() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.CLEAN, 1, "created_at");
+        assertEquals(List.of(new Pair("2026-07-23T01:15:00", "created_at")), pathTrace(analyzer, "$.created_at"));
+    }
+
+    @Test
+    public void testTraceExplicitMissingFieldGetsEmptyMarker() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.CLEAN, 1, "doc_code");
+        assertEquals(List.of(TraceEvidence.MARKER), pathTrace(analyzer, "$.customer_rating"));
+        assertTrue(analyzer.buildJsonReport().contains("\"path_trace\":[{\"id\":\"\",\"id_key\":\"\"}]"));
+    }
+
+    @Test
+    public void testTracePresetByOid() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.CLEAN, 1, PRESET);
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid")), pathTrace(analyzer, "$.customer_rating"));
+    }
+
+    @Test
+    public void testTraceSuffixFallback() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, "{\"user_id\": \"u1\", \"x\": 1}", PRESET);
+        assertEquals(List.of(new Pair("u1", "user_id")), pathTrace(analyzer, "$.x"));
+    }
+
+    // ------------------------------------------------------------------ trace: независимые scopes
+
+    @Test
+    public void testAnomaliesHaveIndependentTrace() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, AnomalyScenario.CLEAN, 1, PRESET);        // payment_dates непуст: is_flat_string_array
+        feed(analyzer, AnomalyScenario.EMPTY_ARRAY, 2, PRESET);  // payment_dates пуст: is_array_empty
+
+        String p = "$.payment_dates[*]";
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid")), pathTrace(analyzer, p), "path_trace — первое появление пути");
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid")), anomalyTrace(analyzer, p, AnomalyDetector.METRIC_IS_STRING_ARRAY));
+        assertEquals(List.of(new Pair(oid(2), "_id.$oid")), anomalyTrace(analyzer, p, AnomalyDetector.METRIC_IS_EMPTY),
+                "аномалия получает id своей строки, а не строки появления пути");
+    }
+
+    @Test
+    public void testOneRowFillsSeveralScopes() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.DATE_AS_ARRAY, 7, PRESET);
+        String p = "$.birth_date[*]";
+        Pair pair = new Pair(oid(7), "_id.$oid");
+        assertEquals(List.of(pair), pathTrace(analyzer, p));
+        assertEquals(List.of(pair), anomalyTrace(analyzer, p, AnomalyDetector.METRIC_IS_DATE_PART));
+        assertEquals(List.of(pair), anomalyTrace(analyzer, p, AnomalyDetector.METRIC_IS_STRING_ARRAY));
+    }
+
+    @Test
+    public void testPolymorphicTraceCarriesFormat() throws Exception {
+        JsonSchemaAnalyzer worker1 = analyzed(AnomalyScenario.CLEAN, 0, PRESET);
+        JsonSchemaAnalyzer worker2 = analyzed(AnomalyScenario.DATE_AS_PLAIN, 1, PRESET);
         worker1.merge(worker2);
-        worker1.merge(worker3);
 
-        assertEquals(
-                List.of("60b8d29f1a4c8b0000000000", "60b8d29f1a4c8b0000000001"),
-                worker1.getSchemaMap().get("$.customer_rating").getTraceIds(),
-                "Лимит trace_ids (max_ids) и лексикографическая сортировка не применены при слиянии воркеров");
+        JsonNode trace = MAPPER.readTree(worker1.buildJsonReport())
+                .get("$.created_at").get("anomalies").get(ANOMALY_POLYMORPHIC_FORMAT).get("trace");
+        assertEquals("[{\"id\":\"" + oid(1) + "\",\"id_key\":\"_id.$oid\",\"format\":\"DATE_ONLY\"},"
+                        + "{\"id\":\"" + oid(0) + "\",\"id_key\":\"_id.$oid\",\"format\":\"LOCAL_DATETIME\"}]",
+                trace.toString(), "полиморфизм, возникший при merge, имеет evidence каждого написания");
+    }
+
+    // ------------------------------------------------------------------ trace: merge
+
+    @Test
+    public void testTraceMergeSortingAndLimit() {
+        JsonSchemaAnalyzer worker2 = analyzed(AnomalyScenario.CLEAN, 2, PRESET);
+        worker2.merge(analyzed(AnomalyScenario.CLEAN, 1, PRESET));
+        worker2.merge(analyzed(AnomalyScenario.CLEAN, 3, PRESET));
+
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid"), new Pair(oid(2), "_id.$oid")),
+                pathTrace(worker2, "$.customer_rating"), "union, сортировка, лимит max_ids=2");
     }
 
     @Test
-    public void testTraceAnomalyGetsId() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // EMPTY_ARRAY в пресет-режиме: путь с аномалией получает id строки-источника
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.EMPTY_ARRAY, 1);
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice(""));
-
-        assertEquals(
-                List.of("60b8d29f1a4c8b0000000001"),
-                analyzer.getSchemaMap().get("$.payment_dates[*]").getTraceIds(),
-                "Путь с аномалией не получил id строки-источника в trace-режиме");
-    }
-
-    @Test
-    public void testNormalModeHasNoTraceIds() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // Обычный analyze(): контракт rx-data без trace не меняется — ключа trace_ids нет
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1);
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
-
-        assertFalse(
-                analyzer.buildJsonReport().contains("trace_ids"),
-                "Ключ trace_ids не должен присутствовать в отчёте обычного (не trace) режима");
-        assertFalse(
-                analyzer.buildJsonReport().contains("trace_id_key"),
-                "Ключ trace_id_key не должен присутствовать в отчёте обычного (не trace) режима");
-    }
-
-    @Test
-    public void testTraceMergeSortingAndLimit() throws Exception {
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // Три воркера с index 2,1,3: id = 60b8d29f1a4c8b%010d лексикографически упорядочены как индексы
-        JsonSchemaAnalyzer worker2 = new JsonSchemaAnalyzer();
-        JsonSchemaAnalyzer worker1 = new JsonSchemaAnalyzer();
-        JsonSchemaAnalyzer worker3 = new JsonSchemaAnalyzer();
-
-        worker2.analyze(new ByteArrayInputStream(
-                ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 2).getBytes()), Slices.utf8Slice(""));
-        worker1.analyze(new ByteArrayInputStream(
-                ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1).getBytes()), Slices.utf8Slice(""));
-        worker3.analyze(new ByteArrayInputStream(
-                ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 3).getBytes()), Slices.utf8Slice(""));
-
-        worker2.merge(worker1);
-        worker2.merge(worker3);
-
-        assertEquals(
-                List.of("60b8d29f1a4c8b0000000001", "60b8d29f1a4c8b0000000002"),
-                worker2.getSchemaMap().get("$.customer_rating").getTraceIds(),
-                "merge должен сортировать trace_ids лексикографически и соблюдать лимит max_ids");
-    }
-
-    @Test
-    public void testTraceMergeEmptyMarkerDoesNotEvictRealIds() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-
-        // Воркер A: нет ни пресет-поля, ни суффикса -> маркер ""
+    public void testTraceMergeKeepsPairsAtomic() {
         JsonSchemaAnalyzer workerA = new JsonSchemaAnalyzer();
-        workerA.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("x", 1))), Slices.utf8Slice(""));
-
-        // Воркер B: BSON-id по пресету
+        feed(workerA, "{\"x\": 1, \"_id\": {\"$oid\": \"o1\"}}", PRESET);
         JsonSchemaAnalyzer workerB = new JsonSchemaAnalyzer();
-        workerB.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("x", 1)
-                        .set("_id", mapper.createObjectNode().put("$oid", "60b8d29f1a4c8b0000000001")))),
-                Slices.utf8Slice(""));
+        feed(workerB, "{\"id\": \"i1\", \"x\": 1}", PRESET);
 
         workerA.merge(workerB);
 
-        PathMetrics metrics = workerA.getSchemaMap().get("$.x");
-        assertEquals(
-                List.of("60b8d29f1a4c8b0000000001", ""),
-                metrics.getTraceIds(),
-                "непустые id должны идти первыми, маркер \"\" — в хвост при свободном слоте");
+        assertEquals(List.of(new Pair("i1", "id"), new Pair("o1", "_id.$oid")), pathTrace(workerA, "$.x"),
+                "каждый id сохраняет свой ключ-источник — ложной пары нет");
+    }
 
-        // Воркер C: другой BSON-id -> заполняет второй слот, маркер "" вытесняется
+    @Test
+    public void testTraceMergeEmptyMarkerDoesNotEvictRealIds() {
+        JsonSchemaAnalyzer workerA = new JsonSchemaAnalyzer();
+        feed(workerA, "{\"x\": 1}", PRESET);
+        JsonSchemaAnalyzer workerB = new JsonSchemaAnalyzer();
+        feed(workerB, "{\"x\": 1, \"_id\": {\"$oid\": \"60b8d29f1a4c8b0000000001\"}}", PRESET);
+
+        workerA.merge(workerB);
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid"), TraceEvidence.MARKER), pathTrace(workerA, "$.x"),
+                "непустые первыми, маркер — в хвост при свободном слоте");
+
         JsonSchemaAnalyzer workerC = new JsonSchemaAnalyzer();
-        workerC.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("x", 1)
-                        .set("_id", mapper.createObjectNode().put("$oid", "60b8d29f1a4c8b0000000002")))),
-                Slices.utf8Slice(""));
-
+        feed(workerC, "{\"x\": 1, \"_id\": {\"$oid\": \"60b8d29f1a4c8b0000000002\"}}", PRESET);
         workerA.merge(workerC);
-
-        assertEquals(
-                List.of("60b8d29f1a4c8b0000000001", "60b8d29f1a4c8b0000000002"),
-                metrics.getTraceIds(),
-                "при заполнении слотов маркер \"\" вытесняется непустыми id");
-        assertEquals("_id.$oid", metrics.getTraceIdKey(), "ключ пресета должен победить");
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid"), new Pair(oid(2), "_id.$oid")), pathTrace(workerA, "$.x"),
+                "при заполнении слотов маркер вытесняется");
     }
 
     @Test
-    public void testTraceIdKeyPreset() throws Exception {
+    public void testNormalModeHasNoTrace() {
+        JsonSchemaAnalyzer analyzer = analyzed(AnomalyScenario.EMPTY_ARRAY, 1, null);
+        PathMetrics metrics = path(analyzer, "$.payment_dates[*]");
+        assertNull(metrics.getPathTrace());
+        assertTrue(metrics.getAnomalyTrace().isEmpty());
+        assertTrue(metrics.getFormatTrace().isEmpty());
+    }
+
+    @Test
+    public void testFormatSetIsUsedForTraceOnlyOnce() {
+        // Формат, уже доказанный на пути, не добавляет id повторно (trace — первое появление)
         JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-
-        // trace(): пресет-режим — ключ = путь пресета без "$."
-        String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.CLEAN, 1);
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice(""));
-
-        assertEquals(
-                "_id.$oid",
-                analyzer.getSchemaMap().get("$.customer_rating").getTraceIdKey(),
-                "Пресет-режим не зафиксировал ключ _id.$oid");
-    }
-
-    @Test
-    public void testTraceIdKeySuffixFallback() throws Exception {
-        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-        ObjectMapper mapper = new ObjectMapper();
-
-        // Ручной JSON без пресет-полей: суффикс-правило по полю user_id
-        String json = mapper.writeValueAsString(
-                mapper.createObjectNode().put("user_id", "u1").put("x", 1));
-        analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice(""));
-
-        PathMetrics metrics = analyzer.getSchemaMap().get("$.user_id");
-        assertEquals(List.of("u1"), metrics.getTraceIds(), "Суффикс-режим не дал значение поля user_id");
-        assertEquals("user_id", metrics.getTraceIdKey(), "Суффикс-режим не зафиксировал имя поля user_id");
-    }
-
-    @Test
-    public void testTraceIdKeyMergePresetPriority() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-
-        // Воркер A: пресет _id.$oid (ранг 0); воркер B: пресет id (ранг 2)
-        JsonSchemaAnalyzer workerA = new JsonSchemaAnalyzer();
-        workerA.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("x", 1)
-                        .set("_id", mapper.createObjectNode().put("$oid", "o1")))), Slices.utf8Slice(""));
-
-        JsonSchemaAnalyzer workerB = new JsonSchemaAnalyzer();
-        workerB.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("id", "i1").put("x", 1))), Slices.utf8Slice(""));
-
-        workerA.merge(workerB);
-
-        PathMetrics metrics = workerA.getSchemaMap().get("$.x");
-        assertEquals("_id.$oid", metrics.getTraceIdKey(), "пресет-ключ с большим рангом должен победить");
-        assertEquals(List.of("i1", "o1"), metrics.getTraceIds(), "trace_ids должны быть отсортированы лексикографически");
-    }
-
-    @Test
-    public void testTraceIdKeyMergeSuffixLexicographic() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-
-        // Оба воркера — суффикс-хиты: побеждает лексикографически меньший ключ
-        JsonSchemaAnalyzer workerA = new JsonSchemaAnalyzer();
-        workerA.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("a_id", "1").put("x", 1))), Slices.utf8Slice(""));
-
-        JsonSchemaAnalyzer workerB = new JsonSchemaAnalyzer();
-        workerB.analyze(new ByteArrayInputStream(mapper.writeValueAsBytes(
-                mapper.createObjectNode().put("b_id", "2").put("x", 1))), Slices.utf8Slice(""));
-
-        workerA.merge(workerB);
-
-        assertEquals("a_id", workerA.getSchemaMap().get("$.x").getTraceIdKey(),
-                "при суффиксных ключах побеждает лексикографически меньший");
+        feed(analyzer, AnomalyScenario.CLEAN, 5, PRESET);
+        feed(analyzer, AnomalyScenario.CLEAN, 3, PRESET);
+        assertEquals(List.of(new Pair(oid(5), "_id.$oid")),
+                path(analyzer, "$.created_at").getFormatTrace().get(ValueFormat.LOCAL_DATETIME).items());
     }
 }

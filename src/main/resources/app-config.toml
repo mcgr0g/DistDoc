@@ -26,8 +26,8 @@ preset = ["_id.$oid", "_id", "id", "uuid", "guid", "oid"]
 suffix = "_id"
 
 [format]
-# Суффиксы имени поля, дающие контекст numeric timestamp (docs/adr/0006-format-detection.md).
+# Суффиксы имени поля, дающие право считать ЧИСЛО Unix-временем (docs/contracts/value-formats.md).
 # Сравнивается последний значимый слог пути ($date/$numberLong/$oid и [*] пропускаются),
-# endsWith с учётом регистра. Строковые форматы от hints не зависят.
+# endsWith с учётом регистра. Строковые даты hints не используют: их проверяет сканер формы и календаря.
 # Env DISTDOC_FORMAT_PATH_HINTS (CSV) полностью заменяет пресет.
 path_hints = ["_at", "_utc"]

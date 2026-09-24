@@ -37,7 +37,7 @@ public interface ArrayAnomalyDetector {
      * @param context неизменяемый snapshot данных (DTO), содержащий абсолютный jsonpath
      *                массива, список строковых представлений его элементов и флаги однородности типов
      * @param metrics мутабельный контейнер метрик текущего пути, в карту аномалий которого
-     *                записываются результаты анализа (через {@link PathMetrics#setAnomaly(String, boolean)})
+     *                записываются результаты анализа (через {@link PathMetrics#markAnomaly(String)}; аномалия монотонно накапливается со всего корпуса данных)
      */
     void detect(ArrayContext context, PathMetrics metrics);
 }

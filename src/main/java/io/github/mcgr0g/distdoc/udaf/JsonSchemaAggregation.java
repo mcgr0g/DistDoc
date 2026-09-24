@@ -70,7 +70,7 @@ public final class JsonSchemaAggregation {
             return;
         }
 
-        // Генерируем финальный JSON-отчет с типами и флагами аномалий для dbt
+        // Генерируем финальный rx-data с типами, форматами и аномалиями для dbt
         String finalReportJson = state.getAnalyzer().buildJsonReport();
 
         // Записываем результат в выходной поток Trino

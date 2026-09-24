@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/mcgr0g/distdoc/main/docs/contracts/rx-data.schema.json",
-  "$comment": "ПРОЕКТ контракта rx-data 2.0 (docs/adr/0006-format-detection.md, статус «предложение»). В фазе 5 заменяет rx-data.schema.json; до этого канонической остаётся версия 1.1. Версия схемы = X.Y из версии плагина X.Y.Z.",
+  "$comment": "ПРОЕКТ контракта rx-data 2.0 (форматы — docs/contracts/value-formats.md). В фазе 5 заменяет rx-data.schema.json; до этого канонической остаётся версия 1.1. Версия схемы = X.Y из версии плагина X.Y.Z.",
   "title": "DistDoc rx-data (.rx.json) 2.0",
   "description": "rx-data: { \"<jsonpath>\": { \"type\", \"max_length\", \"observed_formats\"?, \"anomalies\"?, \"path_trace\"? } }. Имена jsonpath-ключей произвольны (зависят от данных), форма значений фиксирована. Пути выводятся в лексикографическом порядке.",
   "type": "object",
