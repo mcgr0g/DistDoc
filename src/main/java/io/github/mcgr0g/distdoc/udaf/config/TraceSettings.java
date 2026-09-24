@@ -1,9 +1,7 @@
 package io.github.mcgr0g.distdoc.udaf.config;
 
-import org.tomlj.TomlArray;
 import org.tomlj.TomlTable;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -114,41 +112,20 @@ public final class TraceSettings {
         TomlTable trace = AppConfig.section("trace");
         int maxIds = trace.getLong("max_ids").intValue();
         int maxIdLength = trace.getLong("max_id_length").intValue();
-        List<String> preset = resolvePreset(System.getenv("DISTDOC_TRACE_PRESET"), parsePreset(trace.getArray("preset")));
+        List<String> preset = resolvePreset(System.getenv("DISTDOC_TRACE_PRESET"), AppConfig.stringList(trace.getArray("preset")));
         String suffix = resolveSuffix(System.getenv("DISTDOC_TRACE_SUFFIX"), trace.getString("suffix"));
         return new TraceSettings(maxIds, maxIdLength, preset, suffix);
     }
 
     /**
-     * Десериализует TOML-массив пресета в список.
-     *
-     * @param arr массив из секции {@code [trace]}
-     * @return список элементов массива
-     */
-    private static List<String> parsePreset(TomlArray arr) {
-        List<String> preset = new ArrayList<>(arr.size());
-        for (int i = 0; i < arr.size(); i++) {
-            preset.add(arr.getString(i));
-        }
-        return preset;
-    }
-
-    /**
-     * Разрешает пресет: заданная (не {@code null} и не blank) env-переменная полностью
-     * заменяет toml-пресет; формат — CSV через запятую, элементы тримятся, пустые отбрасываются.
+     * Разрешает пресет по общему правилу {@link AppConfig#resolveCsvOverride(String, List)}.
      *
      * @param envValue значение {@code DISTDOC_TRACE_PRESET} (может быть {@code null})
      * @param fallback пресет из {@code [trace]}
      * @return действующий пресет
      */
     static List<String> resolvePreset(String envValue, List<String> fallback) {
-        if (envValue == null || envValue.isBlank()) {
-            return fallback;
-        }
-        return Arrays.stream(envValue.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toList();
+        return AppConfig.resolveCsvOverride(envValue, fallback);
     }
 
     /**

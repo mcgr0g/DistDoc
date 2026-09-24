@@ -1,5 +1,5 @@
-# Конфигурация плагина DistDoc (секции [app], [trace]).
-# Ресурс внутренний и контролируемый: CoreSettings ([app]) и TraceSettings ([trace])
+# Конфигурация плагина DistDoc (секции [app], [trace], [format]).
+# Ресурс внутренний и контролируемый: CoreSettings ([app]), TraceSettings ([trace]) и FormatSettings ([format])
 # через AppConfig при любой ошибке чтения/парсинга бросают IllegalStateException —
 # дефолтов в коде нет.
 # Правила совпадения путей — docs/testing/tracing.md (раздел "Правила совпадения путей при сборе значения").
@@ -24,3 +24,10 @@ preset = ["_id.$oid", "_id", "id", "uuid", "guid", "oid"]
 # Суффикс-правило — FALLBACK: применяется только если ни одно поле пресета не совпало.
 # Поле верхнего уровня, оканчивающееся на "_id"
 suffix = "_id"
+
+[format]
+# Суффиксы имени поля, дающие контекст numeric timestamp (docs/adr/0006-format-detection.md).
+# Сравнивается последний значимый слог пути ($date/$numberLong/$oid и [*] пропускаются),
+# endsWith с учётом регистра. Строковые форматы от hints не зависят.
+# Env DISTDOC_FORMAT_PATH_HINTS (CSV) полностью заменяет пресет.
+path_hints = ["_at", "_utc"]

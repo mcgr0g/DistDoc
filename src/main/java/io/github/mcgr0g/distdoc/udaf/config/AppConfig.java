@@ -1,9 +1,13 @@
 package io.github.mcgr0g.distdoc.udaf.config;
 
 import org.tomlj.Toml;
+import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
 import org.tomlj.TomlTable;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Единственная точка чтения внутреннего ресурса {@code /app-config.toml}.
@@ -33,6 +37,39 @@ public final class AppConfig {
             throw new IllegalStateException("Секция [" + name + "] отсутствует в /app-config.toml");
         }
         return table;
+    }
+
+    /**
+     * Разрешает список с env-override: заданная (не {@code null} и не blank) переменная
+     * полностью заменяет значение из toml; формат — CSV через запятую, элементы тримятся,
+     * пустые отбрасываются. Общее правило для {@code [trace]} и {@code [format]}.
+     *
+     * @param envValue значение env-переменной (может быть {@code null})
+     * @param fallback список из toml-секции
+     * @return действующий список
+     */
+    public static List<String> resolveCsvOverride(String envValue, List<String> fallback) {
+        if (envValue == null || envValue.isBlank()) {
+            return fallback;
+        }
+        return Arrays.stream(envValue.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+    }
+
+    /**
+     * Десериализует TOML-массив строк в список.
+     *
+     * @param arr массив из секции
+     * @return список элементов массива
+     */
+    public static List<String> stringList(TomlArray arr) {
+        List<String> list = new ArrayList<>(arr.size());
+        for (int i = 0; i < arr.size(); i++) {
+            list.add(arr.getString(i));
+        }
+        return list;
     }
 
     /**
