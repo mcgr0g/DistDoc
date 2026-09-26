@@ -159,6 +159,19 @@ tasks.named('check') {
     dependsOn('e2eTest')
 }
 
+// Полная обратная связь для агента: check (unit + e2e) + install-smoke (нужен Docker).
+// check остаётся без Docker — на нём CI-матрица версий Trino.
+tasks.register('verify') {
+    group = 'verification'
+    description = 'Полная проверка плагина: check (unit + e2e) и installSmokeTest (Docker)'
+    dependsOn('check', 'installSmokeTest')
+}
+
+tasks.named('installSmokeTest') {
+    // Тяжёлые JVM с Trino — не параллельно с e2e
+    mustRunAfter('e2eTest')
+}
+
 jar {
     archiveBaseName.set("trino-${trinoVer}-distdoc")
     archiveVersion.set(distdocVer)

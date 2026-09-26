@@ -35,9 +35,8 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /** Проект контракта 2.0; в фазе 5 task01 возвращается к rx-data.schema.json. */
-
-    private static final String SCHEMA_RESOURCE = "rx-data.schema.draft-2.0.json";
+    /** Канонический контракт rx-data (docs/contracts подключён к ресурсам e2e). */
+    private static final String SCHEMA_RESOURCE = "rx-data.schema.json";
     private static final JsonSchema SCHEMA = loadSchema();
 
     @Override

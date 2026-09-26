@@ -19,7 +19,7 @@ import io.trino.spi.type.VarcharType;
  * <p>Служебные поля пути разбираются по явному списку: {@code type}, {@code max_length},
  * {@code observed_formats}, {@code anomalies}, {@code path_trace}, {@code format_trace}. Новая
  * аномалия — новое имя внутри {@code anomalies}, правки сериализатора не требует; новая <i>форма</i>
- * поля — правка whitelist. Выводимая аномалия {@code is_polymorphic_format} пропускается: она
+ * поля — правка whitelist. Вычисляемая аномалия {@code is_polymorphic_format} пропускается: она
  * восстанавливается из форматов. Ключи-пути — данные и не проверяются.</p>
  *
  * <p><b>Fault tolerance (паттерн 5, docs/patterns/plugin.md):</b> сбой разбора не роняет SQL-запрос.

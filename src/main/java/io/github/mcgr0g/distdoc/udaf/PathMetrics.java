@@ -137,7 +137,7 @@ public class PathMetrics {
     }
 
     /**
-     * Проверяет, была ли зафиксирована аномалия (включая выводимую {@link #ANOMALY_POLYMORPHIC_FORMAT}).
+     * Проверяет, была ли зафиксирована аномалия (включая вычисляемую {@link #ANOMALY_POLYMORPHIC_FORMAT}).
      *
      * @param name уникальное имя аномалии
      * @return {@code true}, если аномалия зафиксирована
@@ -150,7 +150,7 @@ public class PathMetrics {
     }
 
     /**
-     * Хранимые аномалии пути (без выводимой {@link #ANOMALY_POLYMORPHIC_FORMAT}), отсортированы по имени.
+     * Хранимые аномалии пути (без вычисляемой {@link #ANOMALY_POLYMORPHIC_FORMAT}), отсортированы по имени.
      *
      * @return неизменяемый вид множества имён
      */

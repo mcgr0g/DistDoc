@@ -50,7 +50,7 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 | readme.md | визитка | всегда первым |
 | agents.md | правила агента | в начале каждой сессии |
 | agents_bootstrap.md | эта карта | при входе в незнакомую область |
-| docs/contracts/rx-data-contract.md | общий контракт rx-data | при изменении вывода плагина или формата .rx.json |
+| docs/contracts/rx-data-contract.md | общий контракт rx-data | при изменении отчёта плагина или формата .rx.json |
 | docs/contracts/value-formats.md | форматы дат: словарь, правила, path hints, таблица примеров | при работе с `observed_formats` и `FormatDetector` |
 | docs/adr/0000-index.md | индекс действующих ADR (0001…0006) и где их решения актуальны | в последнюю очередь — только для «почему так решили» |
 | docs/project-brief.md | бизнес-контекст и требования | при вопросах «зачем» |
@@ -59,7 +59,7 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 | etc/shadowdoc/ | shadow-кластер ShadowDoc (compose, trino-config, catalog/remote.properties, fetch-trino2trino.sh, .env.example) | при прод-интроспекции без установки плагина |
 | docs/testing/fixtures.md | контракт хаос-фикстур и 10 полей | при изменении генерации данных |
 | docs/testing/fixture-matrix.md | ожидания каждой таблицы фикстур, golden-map `crm_combined` | при изменении фикстур и assertions |
-| docs/testing/tracing.md | трассировка идентификаторов (trace_ids, режимы, конфиг) | при работе с trace-режимом UDAF |
+| docs/testing/tracing.md | трассировка идентификаторов (`path_trace`, `anomalies[name].trace`, пары `{id, id_key}`, merge, режимы, конфиг) | при работе с trace-режимом UDAF |
 | docs/testing/prod-access.md | прод-доступ (заглушка) | при работе с продом |
 | docs/guides/demo.md | сценарий демонстрации | при подготовке демо |
 | local/generator/README.md | карта документации генератора | при работе над вторым компонентом |
@@ -79,7 +79,7 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 - `mise run lc-cli` — интерактивный trino-cli;
 - `mise run lc-schema` — прогон UDAF над crm_combined и отчёт `build/dev-lakehouse/schema/combined.rx.json` (depends lc-load);
 - `mise run lc-trace` — trace-режим с пресетом, отчёт `combined.trace.rx.json` (depends lc-load);
-- `mise run lc-verify` — полная верификация: `./gradlew check` (unit + in-process e2e), затем реальный Docker-путь `lc-schema` и `lc-trace`; после завершения кластер автоматически останавливается через `lc-dn`.
+- `mise run lc-verify` — проверка глазами: `./gradlew check` (unit + in-process e2e), затем реальный Docker-путь `lc-schema` и `lc-trace`; после завершения кластер автоматически останавливается через `lc-dn`. Обратная связь агента — `./gradlew verify` (AGENTS.md).
 - `mise run lc-demo` — вершина локального DAG: lc-schema + пост-остановка `lc-dn` (depends_post), кластер не работает в холостую;
 - `mise run sd-demo` — вершина shadow-DAG: lc-load → sd-schema с авто-остановкой `lc-dn` и `sd-dn`;
 - `mise run sd-up` / `sd-dn` — развертывание/остановка shadow-кластера ShadowDoc (`etc/shadowdoc/docker-compose.yml`, depends composeEnv);

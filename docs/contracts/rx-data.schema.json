@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/mcgr0g/distdoc/main/docs/contracts/rx-data.schema.json",
-  "$comment": "Машиночитаемый контракт rx-data (.rx.json), выход UDAF analyze_json_schema. Версия схемы = X.Y из версии плагина X.Y.Z.",
-  "title": "DistDoc rx-data (.rx.json)",
-  "description": "rx-data: { \"<jsonpath>\": { \"type\", \"max_length\", <флаги аномалий>, \"trace_ids\"?, \"trace_id_key\"? } }. Имена jsonpath-ключей произвольны (зависят от данных), форма значений фиксирована.",
+  "$comment": "Машиночитаемый контракт rx-data 2.0 (.rx.json), выход UDAF analyze_json_schema; описание — rx-data-contract.md, форматы — value-formats.md. Версия схемы = X.Y из версии плагина X.Y.Z.",
+  "title": "DistDoc rx-data (.rx.json) 2.0",
+  "description": "rx-data: { \"<jsonpath>\": { \"type\", \"max_length\", \"observed_formats\"?, \"anomalies\"?, \"path_trace\"? } }. Имена jsonpath-ключей произвольны (зависят от данных), форма значений фиксирована. Пути записаны в лексикографическом порядке.",
   "type": "object",
   "properties": {
     "schema_version": {
       "type": "string",
-      "pattern": "^\\d+\\.\\d+$",
-      "description": "Версия схемы rx-data (major.minor), например \"1.1\"."
+      "pattern": "^2\\.\\d+$",
+      "description": "Версия схемы rx-data (major.minor), например \"2.0\"."
     }
   },
   "required": ["schema_version"],
@@ -22,7 +22,7 @@
         "type": {
           "$comment": "Поле данных rx-data «type» (не ключевое слово JSON Schema); имя зафиксировано SchemaStateSerializer.FIELD_TYPE — не переименовывать.",
           "type": "string",
-          "description": "Итоговый тип данных пути (сведённый по правилу Type Promotion).",
+          "description": "Итоговый физический тип пути (сведённый по правилу Type Promotion).",
           "enum": ["UNKNOWN", "VARCHAR", "INTEGER", "DOUBLE", "ARRAY", "BOOLEAN"]
         },
         "max_length": {
@@ -30,21 +30,71 @@
           "description": "Максимальная длина строкового значения в символах (0 для не-строковых путей).",
           "minimum": 0
         },
-        "trace_ids": {
+        "observed_formats": {
           "type": "array",
-          "description": "Идентификаторы строк-источников (trace-режим); лимит задаётся app-config.toml (max_ids).",
-          "items": { "type": "string" }
+          "description": "Написания, строго распознанные хотя бы у одного скалярного значения пути (positive evidence, не гарантия для каждой строки). Порядок — порядок объявления ValueFormat. Ключ отсутствует, если форматов нет.",
+          "items": { "$ref": "#/$defs/valueFormat" },
+          "minItems": 1,
+          "uniqueItems": true
         },
-        "trace_id_key": {
-          "type": "string",
-          "description": "Имя поля-источника trace_id; \"\" — источник не найден. Присутствует только вместе с trace_ids."
+        "anomalies": {
+          "type": "object",
+          "description": "Единственный контейнер аномалий пути. Ключ отсутствует, если аномалий нет.",
+          "propertyNames": { "pattern": "^(is|has)_[a-z0-9_]+$" },
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/anomaly" }
+        },
+        "path_trace": {
+          "$ref": "#/$defs/traceEvidence",
+          "description": "Документы, в которых путь встретился впервые (только trace-режим)."
         }
       },
       "required": ["type", "max_length"],
-      "additionalProperties": {
-        "type": "boolean",
-        "description": "Плоские флаги аномалий (is_array_empty, is_flat_string_array, is_date_part_array, …)."
-      }
+      "additionalProperties": false
+    },
+    "valueFormat": {
+      "type": "string",
+      "enum": ["DATE_ONLY", "LOCAL_DATETIME", "OFFSET_DATETIME", "UTC_DATETIME", "UNIX_SECONDS", "UNIX_MILLIS"]
+    },
+    "anomaly": {
+      "type": "object",
+      "properties": {
+        "detected": {
+          "const": true,
+          "description": "Аномалия обнаружена; монотонна — после фиксации не сбрасывается."
+        },
+        "trace": {
+          "$ref": "#/$defs/traceEvidence",
+          "description": "Документы, на которых обнаружена именно эта аномалия (только trace-режим)."
+        }
+      },
+      "required": ["detected"],
+      "additionalProperties": false
+    },
+    "traceEvidence": {
+      "type": "array",
+      "description": "Ограниченный (max_ids на scope; для is_polymorphic_format — на каждый формат) отсортированный набор атомарных пар {id, id_key}. Пустой массив в отчёт не пишется.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/traceItem" }
+    },
+    "traceItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Значение идентификатора строки-источника; \"\" — источник не найден (не более одного маркера на scope)."
+        },
+        "id_key": {
+          "type": "string",
+          "description": "Имя поля-источника id (пресет/суффикс/explicit); \"\" вместе с id \"\"."
+        },
+        "format": {
+          "$ref": "#/$defs/valueFormat",
+          "description": "Только в trace is_polymorphic_format: какое написание дал этот документ."
+        }
+      },
+      "required": ["id", "id_key"],
+      "additionalProperties": false
     }
   }
 }

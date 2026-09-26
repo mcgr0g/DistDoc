@@ -601,7 +601,7 @@ public class JsonSchemaAnalyzer {
 
     /**
      * Декларативная сборка итогового rx-data (контракт 2.0) через Jackson ObjectNode.
-     * Пути выводятся в лексикографическом порядке; на пути — {@code type}, {@code max_length},
+     * Пути записываются в лексикографическом порядке; на пути — {@code type}, {@code max_length},
      * {@code observed_formats?}, {@code anomalies?} ({@code {detected, trace?}}), {@code path_trace?}.
      * Trace {@code is_polymorphic_format} собирается из trace форматов: элементы несут поле {@code format}.
      *
@@ -613,7 +613,7 @@ public class JsonSchemaAnalyzer {
 
     /**
      * Сборка внутреннего состояния для передачи между воркерами ({@link SchemaStateSerializer}).
-     * Отличия от отчёта: выводимая аномалия {@code is_polymorphic_format} не пишется (восстанавливается
+     * Отличия от отчёта: вычисляемая аномалия {@code is_polymorphic_format} не пишется (восстанавливается
      * из форматов), trace форматов пишется как есть в {@code format_trace}.
      *
      * @return сериализованная JSON-строка состояния
@@ -756,7 +756,7 @@ public class JsonSchemaAnalyzer {
                 case FIELD_ANOMALIES -> value.fields().forEachRemaining(a -> {
                     String name = a.getKey();
                     if (PathMetrics.ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
-                        return; // выводится из форматов
+                        return; // вычисляется из форматов
                     }
                     metrics.markAnomaly(name);
                     JsonNode trace = a.getValue().get(FIELD_TRACE);

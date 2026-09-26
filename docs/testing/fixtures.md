@@ -51,10 +51,10 @@ protected QueryRunner createQueryRunner() throws Exception {
 таблицу тем же `index 0…count-1`, что `lc-gen`, и сверяет с fixture-matrix.md).
 
 **Что НЕ проверяется**:
-- Запись/чтение `.jsonl` и JDBC-загрузка `lc-gen → lc-load` (golden-check `crm_combined` через `mise run lc-verify`)
+- Запись/чтение `.jsonl` и JDBC-загрузка `lc-gen → lc-load` (тестовая инфраструктура стенда; видна при `mise run lc-verify`/`lc-demo`, автоматически не проверяется)
 - Загрузка через JDBC в настоящий Docker-контейнер (только `installSmokeTest` через Testcontainers)
 
-**Запуск**: `./gradlew e2eTest` или `./gradlew check` (unit + e2e)
+**Запуск**: `./gradlew e2eTest`, `./gradlew check` (unit + e2e) или `./gradlew verify` (check + `installSmokeTest`, нужен Docker)
 
 ---
 
@@ -70,7 +70,7 @@ protected QueryRunner createQueryRunner() throws Exception {
 `fmt_`, `arr_`, `pol_`, `trace_`). Типовой фрагмент:
 ```toml
 [[scenarios]]
-# Все группы вместе, детерминированно по index (fixture-matrix §4, golden-check lc-verify)
+# Все группы вместе, детерминированно по index (fixture-matrix §4)
 table = "crm_combined"
 count = 100
 type = "all"

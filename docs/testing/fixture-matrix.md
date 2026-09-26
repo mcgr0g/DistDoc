@@ -88,7 +88,7 @@
 | `pol_created_at_with_arrays` | `anomalies.is_date_part_array.trace`, `anomalies.is_array_empty.trace` | id только из строк своей группы (`i%2==1` и `i%5==0` соответственно) |
 | `pol_created_at_formats` | `anomalies.is_polymorphic_format.trace` | элементы с полем `format`; для каждого из трёх форматов 1…`max_ids` пар; id элемента принадлежит строке своей группы |
 
-## 4. `crm_combined` и golden-check
+## 4. `crm_combined` и golden-map
 
 `crm_combined` (режим `all`, `count = 100`) — небольшая интеграционная таблица, а не
 полная матрица. Режим `all` детерминирован: группа выбирается по `index`.
@@ -104,7 +104,7 @@
 | `customer_rating` | `i%5 < 2` | `DOUBLE` |
 | `surrogate_pk` | `i%2==0` | `sp-…` |
 
-Expectation-map (golden-check обычного отчёта `combined.rx.json`):
+Expectation-map (обычный отчёт, `combined.rx.json` на стенде):
 
 | Путь | `type` | `observed_formats` | `anomalies` |
 |---|---|---|---|
@@ -118,12 +118,14 @@ Expectation-map (golden-check обычного отчёта `combined.rx.json`):
 | `$.surrogate_pk` | `VARCHAR` | — | — |
 | `$.version.$numberLong` | `INTEGER` | — | — |
 
-Golden-check trace-отчёта `combined.trace.rx.json`: у каждой аномалии из таблицы выше
+Trace-отчёт (`combined.trace.rx.json` на стенде): у каждой аномалии из таблицы выше
 есть `trace`; у `is_polymorphic_format` в `trace` встречаются все четыре значения
 `format`; все пары имеют `id_key = "_id.$oid"`; `path_trace` есть у каждого пути.
 
-Это единственный Docker-only golden smoke (`mise run lc-verify`). Корректность
-detector-а — ответственность unit/E2E.
+Исполняет `FixtureMatrixTest` (полная карта путей и trace-форма по `fixtures.toml`) и
+e2e (распределённый отчёт = одноузловой). Docker-стенд (`mise run lc-verify`/`lc-demo`)
+отдельных golden-проверок не содержит: он для онбординга, проверки глазами и примеров
+отчётов в документацию; обратная связь для агента — `./gradlew verify` (`AGENTS.md`).
 
 ## 5. Где проверяется
 
@@ -135,7 +137,8 @@ detector-а — ответственность unit/E2E.
 | unit `FixtureMatrixTest` | разделы 0–4 на каждой таблице `fixtures.toml` (состав реестра, отчёт, trace) | этот документ |
 | unit `SchemaStateSerializerTest` | алгебра merge, round-trip, пропуск чужих путей | docs/testing/tracing.md, docs/patterns/plugin.md (паттерн 5) |
 | E2E `src/e2e/` | раздел 3 (`trace_mixed_sources` после шаффла; отчёт = одноузловой), раздел 4 in-process | этот документ |
-| Docker `lc-verify` | раздел 4 через `fixtures.toml → lc-gen → lc-load` | этот документ |
+| E2E `installSmokeTest` | загрузка плагина PluginManager-ом реального образа Trino (Docker) | docs/testing/reliability-matrix.md |
+| Docker `lc-verify` (глазами) | раздел 4 через `fixtures.toml → lc-gen → lc-load → trino-cli` | этот документ |
 
 ## 6. Добавление нового формата или аномалии
 

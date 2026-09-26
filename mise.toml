@@ -137,9 +137,10 @@ run = """set -o pipefail && mkdir -p {{env.DEV_LAKE_SCHEMA_PATH}} && \
 """
 
 [tasks.lc-verify]
-description = "Полная верификация: unit + e2e и локальные lc-schema/lc-trace, авто-остановка кластера"
-# Gradle check проверяет in-process unit + e2e; затем mise-прогоны проверяют
-# реальный Docker/Trino-путь, который Gradle не покрывает.
+description = "Проверка глазами: unit + e2e, затем отчёты lc-schema/lc-trace на Docker-стенде, авто-остановка кластера"
+# Обратная связь для агентов — ./gradlew verify (AGENTS.md). Здесь после check — прогон
+# Docker-стенда (fixtures.toml → lc-gen → lc-load → trino-cli) для онбординга, финальной
+# проверки глазами и примеров отчётов в документацию.
 run = [
     "./gradlew check",
     { task = "lc-schema" },

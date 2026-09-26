@@ -27,10 +27,6 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Валидация выхода UDAF (rx-data) против контракта 2.0 (JSON Schema Draft 2020-12).
  *
- * <p>До фазы 5 task01 канонический {@code docs/contracts/rx-data.schema.json} остаётся 1.1,
- * поэтому тест валидирует проект {@code rx-data.schema.draft-2.0.json}; в фазе 5
- * {@link #SCHEMA_RESOURCE} возвращается к {@code /rx-data.schema.json}.</p>
- *
  * <p>Схема подключена к тестовым ресурсам через {@code sourceSets.test.resources.srcDir}
  * в build.gradle — валидируется тот же файл, что является контрактом, без копий.</p>
  */
@@ -39,7 +35,7 @@ public class RxDataSchemaTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** Ресурс контракта (docs/contracts подключён к тестовым ресурсам). */
-    private static final String SCHEMA_RESOURCE = "/rx-data.schema.draft-2.0.json";
+    private static final String SCHEMA_RESOURCE = "/rx-data.schema.json";
 
     /** Канонический контракт: парсится один раз на класс теста. */
     private static final JsonSchema SCHEMA = loadSchema();

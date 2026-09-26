@@ -75,7 +75,7 @@ public class SchemaStateSerializerTest {
         JsonSchemaAnalyzer analyzer = a();
         analyzer.merge(b());
         String state = analyzer.buildStateJson();
-        assertFalse(state.contains("is_polymorphic_format"), "выводимая аномалия в состояние не пишется");
+        assertFalse(state.contains("is_polymorphic_format"), "вычисляемая аномалия в состояние не пишется");
         assertTrue(state.contains("\"format_trace\""), "trace форматов передаётся между воркерами");
         assertFalse(analyzer.buildJsonReport().contains("format_trace"), "в отчёт format_trace не попадает");
     }
