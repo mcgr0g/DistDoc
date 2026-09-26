@@ -14,8 +14,8 @@ public class ChaosDataGenerator {
      * Генерирует одну строку JSON на основе источника и выбранного сценария аномалий.
      *
      * @param source   целевой бизнес-источник данных
-     * @param scenario выбранный профиль аномалий (CLEAN, EMPTY_ARRAY, DATE_AS_ARRAY, DATE_AT_UNIX, DATE_AS_PLAIN, ALL)
-     * @param index    порядковый индекс записи (используется для генерации уникальных ID)
+     * @param scenario выбранный профиль аномалий ({@link AnomalyScenario})
+     * @param index    порядковый индекс записи: уникальные ID и выбор группы мутаций внутри режима
      * @return строка в формате JSON Lines
      * @throws Exception в случае сбоев сериализации Jackson
      */

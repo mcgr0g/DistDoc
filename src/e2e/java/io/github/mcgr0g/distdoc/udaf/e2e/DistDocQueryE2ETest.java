@@ -84,9 +84,10 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
         assertTrue(root.at("/$.birth_date[*]/anomalies/is_date_part_array/detected").asBoolean(), "нет is_date_part_array: " + rx);
         assertTrue(root.at("/$.payment_dates[*]/anomalies/is_array_empty/detected").asBoolean(), "нет is_array_empty: " + rx);
 
-        // created_at: local datetime + plain date -> полиморфизм форматов
+        // created_at: группы i%4 режима all -> четыре написания (fixture-matrix.md §4)
         JsonNode createdAt = root.get("$.created_at");
-        assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\"]", createdAt.get("observed_formats").toString(), "observed_formats: " + rx);
+        assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\",\"OFFSET_DATETIME\",\"UNIX_MILLIS\"]",
+                createdAt.get("observed_formats").toString(), "observed_formats: " + rx);
         assertTrue(createdAt.at("/anomalies/is_polymorphic_format/detected").asBoolean(), "нет is_polymorphic_format: " + rx);
         assertFalse(root.get("$.customer_rating").has("observed_formats"), "ложный формат на customer_rating: " + rx);
     }

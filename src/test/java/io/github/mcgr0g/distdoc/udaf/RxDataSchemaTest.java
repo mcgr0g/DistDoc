@@ -72,10 +72,9 @@ public class RxDataSchemaTest {
     public void testRxDataValidInTracePresetMode() throws Exception {
         JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
         ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-        // ALL + DATE_AT_UNIX: аномалии массивов, полиморфизм форматов и их trace в одном отчёте
+        // ALL: аномалии массивов, полиморфизм форматов и их trace в одном отчёте
         for (int i = 0; i < 30; i++) {
-            AnomalyScenario scenario = (i % 5 == 0) ? AnomalyScenario.DATE_AT_UNIX : AnomalyScenario.ALL;
-            String json = ChaosDataGenerator.generateSingleLine(source, scenario, i);
+            String json = ChaosDataGenerator.generateSingleLine(source, AnomalyScenario.ALL, i);
             analyzer.analyze(new ByteArrayInputStream(json.getBytes()), Slices.utf8Slice(""));
         }
         String report = analyzer.buildJsonReport();

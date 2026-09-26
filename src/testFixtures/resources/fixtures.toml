@@ -1,42 +1,113 @@
-# Сценарии генерации хаос-данных
+# Сценарии генерации хаос-данных.
+# Что должна показать каждая таблица — docs/testing/fixture-matrix.md (префикс = ось проверки:
+# fmt_ — формат/тип одного поля, arr_ — аномалия массива, pol_ — полиморфизм форматов, trace_ — источник id).
+# type — режим AnomalyScenario в нижнем регистре; file — по имени таблицы.
+# Состав таблиц сверяет FixtureMatrixTest: новая таблица без ожиданий в матрице роняет unit-тесты.
+
+# --- Интеграционная таблица и эталон ---
+
 [[scenarios]]
-# 1. Таблица-Монстр: Смесь всех аномалий сразу для финальной проверки регрессии
+# Все группы вместе, детерминированно по index (fixture-matrix §4, golden-check lc-verify)
 table = "crm_combined"
 count = 100
 type = "all"
-file = "build/dev-lakehouse/data/combined.jsonl"
+file = "build/dev-lakehouse/data/crm_combined.jsonl"
 
 [[scenarios]]
-# 2. Изолированная таблица: Только частицы дат в birth_date
-table = "debug_date_part"
-count = 50
-type = "date_as_array"
-file = "build/dev-lakehouse/data/date_part.jsonl"
-
-[[scenarios]]
-# 3. Изолированная таблица: Только пустые массивы в payment_dates
-table = "debug_empty_arrays"
-count = 50
-type = "empty_array"
-file = "build/dev-lakehouse/data/empty_arrays.jsonl"
-
-[[scenarios]]
-# 4. Изолированная таблица: Unix-timestamp в миллисекундах в created_at
-table = "debug_date_unix"
-count = 50
-type = "date_at_unix"
-file = "build/dev-lakehouse/data/date_unix.jsonl"
-
-[[scenarios]]
-# 5. Изолированная таблица: Обычная дата YYYY-MM-DD в created_at
-table = "debug_date_plain"
-count = 50
-type = "date_as_plain"
-file = "build/dev-lakehouse/data/date_plain.jsonl"
-
-[[scenarios]]
-# 6. Эталонная чистая таблица: проверка Type Promotion и таймзон (created_at/updated_at)
+# Базовая запись без мутаций (fixture-matrix §0)
 table = "clean"
 count = 50
 type = "clean"
 file = "build/dev-lakehouse/data/clean.jsonl"
+
+# --- Атомарные: формат/тип одного поля (fixture-matrix §1) ---
+
+[[scenarios]]
+# created_at = 2026-07-23T01:15:00 → LOCAL_DATETIME (значение базовой записи)
+table = "fmt_created_at_local"
+count = 50
+type = "clean"
+file = "build/dev-lakehouse/data/fmt_created_at_local.jsonl"
+
+[[scenarios]]
+# created_at = 1784769300000 → INTEGER, UNIX_MILLIS
+table = "fmt_created_at_unix_millis"
+count = 50
+type = "date_at_unix"
+file = "build/dev-lakehouse/data/fmt_created_at_unix_millis.jsonl"
+
+[[scenarios]]
+# created_at = 2026-07-23 → DATE_ONLY
+table = "fmt_created_at_date_only"
+count = 50
+type = "date_as_plain"
+file = "build/dev-lakehouse/data/fmt_created_at_date_only.jsonl"
+
+[[scenarios]]
+# updated_at = 2026-07-23T01:15:00+03:00 → OFFSET_DATETIME, не UTC (значение базовой записи)
+table = "fmt_updated_at_offset"
+count = 50
+type = "clean"
+file = "build/dev-lakehouse/data/fmt_updated_at_offset.jsonl"
+
+[[scenarios]]
+# promo_expiry_date = 2026-08-01 → DATE_ONLY без hint (значение базовой записи)
+table = "fmt_promo_expiry_date"
+count = 50
+type = "clean"
+file = "build/dev-lakehouse/data/fmt_promo_expiry_date.jsonl"
+
+[[scenarios]]
+# customer_rating: чётные INTEGER, нечётные DOUBLE → DOUBLE без аномалий
+table = "fmt_customer_rating_promotion"
+count = 50
+type = "rating_promotion"
+file = "build/dev-lakehouse/data/fmt_customer_rating_promotion.jsonl"
+
+# --- Атомарные: аномалия массива (fixture-matrix §1) ---
+
+[[scenarios]]
+# birth_date = ["1990","05","15"] → is_date_part_array + is_flat_string_array
+table = "arr_birth_date_parts"
+count = 50
+type = "date_as_array"
+file = "build/dev-lakehouse/data/arr_birth_date_parts.jsonl"
+
+[[scenarios]]
+# payment_dates = [] → is_array_empty
+table = "arr_payment_dates_empty"
+count = 50
+type = "empty_array"
+file = "build/dev-lakehouse/data/arr_payment_dates_empty.jsonl"
+
+# --- Комбинации: полиморфизм форматов и взаимодействие осей (fixture-matrix §2) ---
+
+[[scenarios]]
+# created_at по i%3: local / date-only / offset → is_polymorphic_format
+table = "pol_created_at_formats"
+count = 60
+type = "pol_created_at_formats"
+file = "build/dev-lakehouse/data/pol_created_at_formats.jsonl"
+
+[[scenarios]]
+# + birth_date parts (i%2==1), payment_dates [] (i%5==0): независимые trace аномалий
+table = "pol_created_at_with_arrays"
+count = 60
+type = "pol_created_at_with_arrays"
+file = "build/dev-lakehouse/data/pol_created_at_with_arrays.jsonl"
+
+[[scenarios]]
+# + customer_rating DOUBLE (i%2==1): подъём типа не смешивается с полиморфизмом форматов
+table = "pol_created_at_with_rating"
+count = 60
+type = "pol_created_at_with_rating"
+file = "build/dev-lakehouse/data/pol_created_at_with_rating.jsonl"
+
+# --- Трассировка (fixture-matrix §3) ---
+
+[[scenarios]]
+# id-источник по i%4: _id.$oid / id / order_id / нет id — согласованность пар {id, id_key}
+table = "trace_mixed_sources"
+count = 40
+type = "trace_mixed_sources"
+file = "build/dev-lakehouse/data/trace_mixed_sources.jsonl"

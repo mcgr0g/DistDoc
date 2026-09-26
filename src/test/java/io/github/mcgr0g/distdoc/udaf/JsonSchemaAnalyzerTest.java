@@ -135,9 +135,9 @@ public class JsonSchemaAnalyzerTest {
         assertTrue(rating.getFormats().isEmpty());
         assertFalse(rating.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
 
-        // created_at: local datetime + plain date -> полиморфизм
+        // created_at: группы i%4 (local / date-only / unix millis / offset) -> полиморфизм
         PathMetrics createdAt = path(analyzer, "$.created_at");
-        assertEquals(EnumSet.of(DATE_ONLY, LOCAL_DATETIME), createdAt.getFormats());
+        assertEquals(EnumSet.of(DATE_ONLY, LOCAL_DATETIME, OFFSET_DATETIME, UNIX_MILLIS), createdAt.getFormats());
         assertTrue(createdAt.hasAnomaly(ANOMALY_POLYMORPHIC_FORMAT));
     }
 

@@ -73,7 +73,7 @@
 | `pol_created_at_formats` | `pol_created_at_formats` | `created_at`: `i%3==0` local, `1` date-only, `2` offset | `$.created_at`: `observed_formats=[DATE_ONLY, LOCAL_DATETIME, OFFSET_DATETIME]`, `is_polymorphic_format`, `type=VARCHAR`, `max_length=25` |
 | `pol_created_at_with_arrays` | `pol_created_at_with_arrays` | `created_at` как выше; `birth_date` parts при `i%2==1`; `payment_dates=[]` при `i%5==0` | как выше + `$.birth_date[*]`: `is_date_part_array`, `is_flat_string_array`; `$.payment_dates[*]`: `is_array_empty`, `is_flat_string_array`, `DATE_ONLY`; в trace-режиме у каждой аномалии свой `trace`, независимый от `path_trace` |
 | `pol_created_at_with_rating` | `pol_created_at_with_rating` | `created_at` как выше; `customer_rating` `DOUBLE` при `i%2==1` | как в `pol_created_at_formats` + `$.customer_rating`: `type=DOUBLE`, нет `observed_formats` и `anomalies` |
-| `trace_mixed_sources` | `trace_mixed_sources` | id-источник: `i%4==0` `_id.$oid`, `1` `id` (без `_id`), `2` `order_id` (без `_id`/`id`), `3` без id | см. раздел 3 |
+| `trace_mixed_sources` | `trace_mixed_sources` | id-источник: `i%4==0` `_id.$oid`, `1` `id` (без `_id`), `2` `order_id` (без `_id`/`id`), `3` без id | базовая запись + `$.id`, `$.order_id`: `VARCHAR`; trace — раздел 3 |
 
 ## 3. Trace-ожидания
 
@@ -84,7 +84,7 @@
 |---|---|---|
 | любая | `path_trace` каждого пути | 1…`max_ids` пар; сортировка по `(id, id_key)`; маркер `{"id":"","id_key":""}` не более одного и только в хвосте |
 | `trace_mixed_sources` | все scopes | каждая пара согласована: префикс id задаёт ключ — `60b8…` ↔ `_id.$oid`, `id-…` ↔ `id`, `ord-…` ↔ `order_id`, `""` ↔ `""`. Ложная пара (id одного источника с ключом другого) — провал |
-| `trace_mixed_sources` | merge | E2E на распределённом кластере: результат совпадает при любом порядке merge (сравнение канонизированных множеств пар) |
+| `trace_mixed_sources` | merge | E2E на распределённом кластере: обычный отчёт совпадает с одноузловым; в trace-отчёте все пары согласованы, `$.id`/`$.order_id`/`$._id.$oid` несут id только своего источника. Значения id не сравниваются: scope хранит первое появление факта на воркере, поэтому набор id зависит от разбиения на сплиты (алгебра merge — unit `SchemaStateSerializerTest`) |
 | `pol_created_at_with_arrays` | `anomalies.is_date_part_array.trace`, `anomalies.is_array_empty.trace` | id только из строк своей группы (`i%2==1` и `i%5==0` соответственно) |
 | `pol_created_at_formats` | `anomalies.is_polymorphic_format.trace` | элементы с полем `format`; для каждого из трёх форматов 1…`max_ids` пар; id элемента принадлежит строке своей группы |
 
@@ -131,9 +131,10 @@ detector-а — ответственность unit/E2E.
 |---|---|---|
 | unit `FormatDetectorTest` | сканер, числа, hints | value-formats.md, раздел 6 |
 | unit `FormatSettingsTest` | `[format]` + env | value-formats.md, раздел 3.1 |
-| unit `JsonSchemaAnalyzerTest` | разделы 0–2 на строках `ChaosDataGenerator.generateSingleLine` | этот документ |
+| unit `JsonSchemaAnalyzerTest` | переходы и merge на отдельных строках режимов | этот документ |
+| unit `FixtureMatrixTest` | разделы 0–4 на каждой таблице `fixtures.toml` (состав реестра, отчёт, trace) | этот документ |
 | unit `SchemaStateSerializerTest` | алгебра merge, round-trip, пропуск чужих путей | docs/testing/tracing.md, docs/patterns/plugin.md (паттерн 5) |
-| E2E `src/e2e/` | раздел 3 (trace, распределённый merge), раздел 4 in-process | этот документ |
+| E2E `src/e2e/` | раздел 3 (`trace_mixed_sources` после шаффла; отчёт = одноузловой), раздел 4 in-process | этот документ |
 | Docker `lc-verify` | раздел 4 через `fixtures.toml → lc-gen → lc-load` | этот документ |
 
 ## 6. Добавление нового формата или аномалии
