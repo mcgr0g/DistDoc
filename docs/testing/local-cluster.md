@@ -55,7 +55,7 @@ FROM unnest(cast(json_parse(?) as array(json))) as t(item)
 *   `mise run lc-schema` — Запуск UDAF-плагина над таблицей хаоса, анализ схемы и выгрузка отформатированного JSON-отчета в `build/dev-lakehouse/schema/combined.rx.json` с помощью `jaq`.
 *   `mise run lc-trace` — Тот же UDAF в trace-режиме (пресет), отчёт `build/dev-lakehouse/schema/combined.trace.rx.json`. Детали и явный режим — docs/testing/tracing.md, раздел "Дополнительные команды (lc-trace)".
 *   `mise run lc-demo` — Вершина локального DAG: полный демо-пайплайн (lc-schema) с авто-остановкой кластера в пост-вызове (`depends_post = ["lc-dn"]`), чтобы контейнер не работал в холостую. `lc-schema` остаётся изолированной задачей DAG.
-*   `mise run lc-verify` — полная верификация: `./gradlew check` (unit + in-process e2e), затем реальные Docker/Trino-прогоны `lc-schema` и `lc-trace` через `trino-cli`; после завершения кластер автоматически останавливается (`depends_post = ["lc-dn"]`). Проверяются также генерация фикстур, JDBC-загрузка и CLI-путь, которые E2E не заменяют.
+*   `mise run lc-verify` — проверка глазами: `./gradlew check` (unit + in-process e2e), затем реальные Docker/Trino-прогоны `lc-schema` и `lc-trace` через `trino-cli`; после завершения кластер автоматически останавливается (`depends_post = ["lc-dn"]`). Для онбординга, финальной проверки и примеров отчётов; автоматическая обратная связь — `./gradlew verify` (AGENTS.md).
 *   `mise run sd-demo` — Вершина shadow-DAG: `lc-load` (прод-эмулятор) → `sd-schema` (shadow-интроспекция) с авто-остановкой обоих кластеров (`depends_post = ["lc-dn", "sd-dn"]`).
 
 ### Изоляция CLI от глобального конфига
@@ -112,7 +112,7 @@ mise run sd-dn        # остановить shadow-кластер
 - **LDAP/basic**: пароль в `REMOTE_PASSWORD` (`connection-password`);
 - **OAuth2**: токен доступа в URL (`connection-url=jdbc:trino://host:443/catalog?SSL=true&accessToken=...`) — значение вставляет пользователь в `REMOTE_TRINO_URL`.
 
-**Keycloak-эмуляция (вывод анализа, без реализации):** локальная эмуляция «trino + keycloak → shadow» технически возможна (keycloak/keycloak + realm import + OAuth2-конфиг на lc), но не входит в эту поставку: проверка цепочки OAuth2 делается на реальном контуре (или отдельным стендом позже). В shadow-стенде аутентификация покрыта параметрами JDBC (password/accessToken), поведение которых документировано производителями драйвера.
+**Keycloak-эмуляция (итог анализа, без реализации):** локальная эмуляция «trino + keycloak → shadow» технически возможна (keycloak/keycloak + realm import + OAuth2-конфиг на lc), но не входит в эту поставку: проверка цепочки OAuth2 делается на реальном контуре (или отдельным стендом позже). В shadow-стенде аутентификация покрыта параметрами JDBC (password/accessToken), поведение которых документировано производителями драйвера.
 
 ### Персистентность
 Таблицы Trino **всегда** in-memory: Memory connector хранит все данные и метаданные в RAM и теряет их при рестарте (документация Trino, connector/memory.md). Полноценное переживающее рестарт хранилище таблиц потребовало бы Delta/Iceberg-коннектора — вне этой поставки.

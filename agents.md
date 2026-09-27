@@ -4,13 +4,19 @@
 - Все создаваемые артефакты (документы, заметки, комментарии) — русский, как существующая документация.
 
 ## Стек
-- Java 25 (toolchain в build.gradle), Gradle wrapper 9.3.0, mise (tools: gradle 9.6.0, java temurin-25, jaq), Trino 481 (trinoVersion), distdocVersion 1.1.0 — оба в gradle.properties.
+- Java 25 (toolchain в build.gradle), Gradle wrapper 9.3.0, mise (tools: gradle 9.6.0, java temurin-25, jaq), Trino 481 (trinoVersion), distdocVersion 2.0.0 — оба в gradle.properties.
 - Сборка только через mise run … (см. agents_bootstrap.md); прямой ./gradlew — по необходимости.
 
 ## Верификация сборки
 - Перед сдачей любых изменений в build.gradle, sourceSets, dependencies — ОБЯЗАТЕЛЬНО запуск `./gradlew clean build`.
 - Причина: `./gradlew check` возвращает `UP-TO-DATE` для уже скопированных ресурсов и не выявляет ошибки дублирования/конфликта задач. Только `clean build` гарантирует проверку с нуля.
 - CI всегда запускается на чистом checkout — локальная верификация должна эмулировать это.
+- Обратная связь агента — только Gradle: `./gradlew check` (unit + e2e) на каждом шаге;
+  `./gradlew verify` (check + `installSmokeTest`, нужен Docker) — перед сдачей и при изменении
+  упаковки, ресурсов (`app-config.toml`), `build.gradle`. Только install-smoke проверяет
+  загрузку плагина PluginManager-ом реального образа Trino.
+- `mise run lc-verify`/`lc-demo` (Docker-стенд) — для людей: онбординг, проверка глазами,
+  примеры отчётов для документации; агентской проверкой не являются.
 
 ## Ключевые запреты
 1. НЕ менять регистр JSON-ключей и служебные BSON-ключи ($oid, $date, $numberLong, @type, @version) — ни при парсинге, ни в путях, ни в SQL.
@@ -30,3 +36,7 @@
 - Частицы плагина: docs/ (contracts/, adr/, patterns/, testing/, guides/).
 - Документация генератора: local/generator/ (вне git, стиль тот же).
 - local/ — вне git (служебный каталог проекта).
+- ADR читать в последнюю очередь: сначала актуальные документы (contracts/, patterns/, testing/),
+  затем, только если нужен ответ «почему так решили», — ADR из индекса docs/adr/0000-index.md.
+  ADR устаревают; при расхождении истина — актуальный документ, а ADR требует пометки в индексе.
+- Код, тесты и актуальные документы ссылаются на актуальные документы, а не на ADR.

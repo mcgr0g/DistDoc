@@ -29,7 +29,7 @@ Reliability Matrix — набор e2e-тестов, проверяющих со�
 ---
 
 ### 2. E2E in-process (`src/e2e/`)
-**Что**: 13 тестов (4 класса), реальный движок Trino + реальный шаффл + упаковка  
+**Что**: 15 тестов (4 класса), реальный движок Trino + реальный шаффл + упаковка  
 **Зачем**: Проверка интеграции с Trino без Docker  
 **Как**: 
 - Отдельный sourceSet с изоляцией classpath
@@ -42,7 +42,7 @@ Reliability Matrix — набор e2e-тестов, проверяющих со�
 **Как**:
 - In-memory генерация через `ChaosDataGenerator.generateSingleLine()` (быстрее файлового пути)
 - Валидация rx-data против `docs/contracts/rx-data.schema.json`
-- Проверка флагов аномалий (`is_date_part_array`, `is_array_empty`)
+- Проверка аномалий в `anomalies` (`is_date_part_array`, `is_array_empty`) и `observed_formats` пути `$.created_at`
 
 #### DistDocTraceE2ETest (4 теста)
 **Что**: Trace-режим UDAF с идентификаторами строк  
@@ -50,15 +50,17 @@ Reliability Matrix — набор e2e-тестов, проверяющих со�
 **Как**:
 - `analyze_json_schema(line, trace())` — пресет из `app-config.toml`
 - `analyze_json_schema(line, trace('surrogate_pk'))` — явный режим (поле присутствует в ~50% строк)
-- Проверка отсутствия `trace_ids` в обычном режиме
+- Пары `{id, id_key}` в `path_trace` и `anomalies[name].trace`; отсутствие trace-полей в обычном режиме
 
-#### DistDocDistributedE2ETest (5 тестов)
+#### DistDocDistributedE2ETest (7 тестов)
 **Что**: Распределённый кластер (coordinator + 2 workers) с реальным шаффлом по памяти  
 **Зачем**: Проверка `SchemaStateSerializer` (паттерн 3) — единственный тест, где combine выполняется через `RemoteSource`  
 **Как**:
 - `DistributedQueryRunner.builder(...).build()` (без `setNodeCount` — количество нод по умолчанию, тест ассертит `nodes >= 3`)
 - `EXPLAIN (TYPE DISTRIBUTED)` содержит `RemoteSource[sourceFragmentIds = [1]]` — фазы Input → Serialize → Combine → Output
 - 500 строк (большая таблица) → результат == результат на одной ноде (корректность combine)
+- таблицы `big` и `mixed` (`trace_mixed_sources`): обычный отчёт == одноузловой `JsonSchemaAnalyzer` по тем же строкам
+- trace на смешанных id-источниках после шаффла: пары `{id, id_key}` согласованы (docs/testing/fixture-matrix.md, раздел 3)
 
 **Почему "реальный" шаффл**: обмен `SchemaState` между нодами через сериализацию в memory exchange (не через сеть, но через тот же `SchemaStateSerializer`, что и в проде). Unit-тесты и `lc-schema` выполняются на одной ноде — combine никогда не вызывается.
 
@@ -115,7 +117,10 @@ Reliability Matrix — набор e2e-тестов, проверяющих со�
 # Install-smoke (требует Docker)
 ./gradlew installSmokeTest -PtrinoVersion=483
 
-# Mise-обёртка (запускает ./gradlew check)
+# Полная обратная связь для агента: check + installSmokeTest (требует Docker)
+./gradlew verify
+
+# Проверка глазами на Docker-стенде: ./gradlew check + отчёты lc-schema/lc-trace
 mise run lc-verify
 ```
 

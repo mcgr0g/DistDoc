@@ -1,14 +1,15 @@
 package io.github.mcgr0g.distdoc.udaf;
 
-import io.github.mcgr0g.distdoc.udaf.config.TraceSettings;
+import io.github.mcgr0g.distdoc.udaf.formats.ValueFormat;
 import java.util.*;
 
 /**
  * Мутабельный контейнер метрик и метаданных, собранных для конкретного JSONPath.
  *
- * <p>Класс аккумулирует информацию о типах данных, максимальной длине значений
- * и обнаруженных структурных аномалиях. Экземпляр {@code PathMetrics} создается
- * для каждого уникального пути в рамках одного сеанса интроспекции.</p>
+ * <p>Класс аккумулирует информацию о типах данных, максимальной длине значений,
+ * доказанных написаниях значений ({@code observed_formats}) и обнаруженных аномалиях.
+ * Экземпляр {@code PathMetrics} создается для каждого уникального пути в рамках одного
+ * сеанса интроспекции.</p>
  *
  * <p><b>Полиморфизм и сведение типов:</b></p>
  * <p>Если в процессе обработки документов на одном и том же пути встречаются разные
@@ -17,17 +18,24 @@ import java.util.*;
  * смешение {INTEGER, DOUBLE} сводится к {@code DOUBLE} (расширение без потери данных),
  * любое смешение с {@code VARCHAR}/{@code BOOLEAN}/{@code ARRAY} — к {@code VARCHAR}.</p>
  *
- * <p><b>Параллельная агрегация (Thread Safety & Cluster Merge):</b></p>
- * <p>Метод {@link #merge(PathMetrics)} обеспечивает корректное объединение результатов,
- * посчитанных параллельно на разных воркерах Trino. Длины объединяются через функцию
- * {@code max()}, множества типов сливаются через {@code addAll()}, а флаги аномалий
- * объединяются по правилу логического {@code OR} (если аномалия найдена хотя бы в одной
- * строке на любом сервере, она попадет в финальный отчет).</p>
+ * <p><b>Монотонность:</b> форматы и аномалии только накапливаются — операции сужения нет.
+ * Аномалия {@link #ANOMALY_POLYMORPHIC_FORMAT} вычисляется при детекте разных форматов на одном
+ * jsonpath, в том числе на разных воркерах.</p>
+ *
+ * <p><b>Трассировка:</b> {@code path_trace}, каждая аномалия и каждый формат имеют
+ * собственный {@link TraceEvidence} с независимым лимитом (docs/testing/tracing.md).</p>
+ *
+ * <p><b>Параллельная агрегация (Cluster Merge):</b></p>
+ * <p>Метод {@link #merge(PathMetrics)} объединяет результаты воркеров Trino: длины — {@code max()},
+ * типы, форматы и аномалии — union, trace evidence — {@link TraceEvidence#merge(TraceEvidence)}.</p>
  *
  * @see io.github.mcgr0g.distdoc.udaf.anomalies.ArrayAnomalyDetector
  * @see JsonSchemaAnalyzer
  */
 public class PathMetrics {
+
+    /** Аномалия полиморфизма форматов: на пути доказано ≥ 2 написаний ({@link ValueFormat}). */
+    public static final String ANOMALY_POLYMORPHIC_FORMAT = "is_polymorphic_format";
 
     /** Набор всех уникальных типов данных, зафиксированных на данном пути. */
     private final Set<String> types = new TreeSet<>();
@@ -35,21 +43,20 @@ public class PathMetrics {
     /** Максимальная длина строкового представления значения в байтах/символах. */
     private long maxLength = 0;
 
-    /** Динамическая карта флагов аномалий (Имя аномалии -> Наличие). */
-    private final Map<String, Boolean> anomalies = new HashMap<>();
+    /** Доказанные написания значений (порядок итерации — порядок объявления enum). */
+    private final EnumSet<ValueFormat> formats = EnumSet.noneOf(ValueFormat.class);
 
-    /**
-     * Идентификаторы строк-источников (trace_ids): строка, где путь встретился впервые,
-     * и строки с зафиксированными аномалиями. Лимит и длина — из {@link TraceSettings}.
-     */
-    private final List<String> traceIds = new ArrayList<>();
+    /** Имена обнаруженных аномалий (только зафиксированные, отсортированы). */
+    private final TreeSet<String> anomalies = new TreeSet<>();
 
-    /**
-     * Имя поля-источника trace_id (пресет/суффикс/explicit); {@code null} — не установлен,
-     * {@code ""} — источник не найден (маркер неизвестного). Выбор при слиянии —
-     * {@link #mergeTraceIdKey(String)}.
-     */
-    private String traceIdKey = null;
+    /** Документы, в которых путь встретился впервые (trace-режим); {@code null} — trace не собирался. */
+    private TraceEvidence pathTrace = null;
+
+    /** Документы, на которых впервые зафиксирована конкретная аномалия (trace-режим). */
+    private final TreeMap<String, TraceEvidence> anomalyTrace = new TreeMap<>();
+
+    /** Документы, впервые давшие конкретный формат (trace-режим); источник trace полиморфизма. */
+    private final EnumMap<ValueFormat, TraceEvidence> formatTrace = new EnumMap<>(ValueFormat.class);
 
     /**
      * Регистрирует тип данных, встреченный на текущем пути.
@@ -101,206 +108,134 @@ public class PathMetrics {
     }
 
     /**
-     * Выставляет значение флага для конкретной аномалии.
+     * Фиксирует доказанное написание значения на пути.
      *
-     * @param key   уникальное имя аномалии в стиле {@code snake_case}
-     * @param value {@code true}, если аномалия обнаружена в текущем контейнере
+     * @param format формат ({@code null} игнорируется)
+     * @return {@code true}, если формат на пути новый
      */
-    public void setAnomaly(String key, boolean value) {
-        this.anomalies.put(key, value);
+    public boolean addFormat(ValueFormat format) {
+        return format != null && formats.add(format);
     }
 
     /**
-     * Проверяет, была ли зафиксирована конкретная аномалия.
+     * Доказанные написания пути в порядке объявления {@link ValueFormat}.
      *
-     * @param key уникальное имя аномалии
-     * @return {@code true}, если аномалия была найдена хотя бы один раз, иначе {@code false}
+     * @return неизменяемый вид множества форматов
      */
-    public boolean getAnomaly(String key) {
-        return this.anomalies.getOrDefault(key, false);
+    public Set<ValueFormat> getFormats() {
+        return Collections.unmodifiableSet(formats);
     }
 
     /**
-     * Возвращает полную карту обнаруженных аномалий для данного пути.
-     * Используется сериализатором и генератором JSON-отчетов.
+     * Фиксирует аномалию. Операции сброса нет: пул аномалий монотонно возрастает.
      *
-     * @return немодифицируемый вид или прямая ссылка на карту аномалий
+     * @param name уникальное имя аномалии в стиле {@code snake_case} с префиксом {@code is_}/{@code has_}
+     * @return {@code true}, если аномалия на пути новая
      */
-    public Map<String, Boolean> getAnomalies() {
-        return anomalies;
+    public boolean markAnomaly(String name) {
+        return anomalies.add(name);
     }
 
     /**
-     * Добавляет идентификатор строки-источника в трассировочный список пути.
+     * Проверяет, была ли зафиксирована аномалия (включая вычисляемую {@link #ANOMALY_POLYMORPHIC_FORMAT}).
      *
-     * <ul>
-     *   <li>{@code null} — игнорируется (никаких мутаций);</li>
-     *   <li>{@code ""} (пустой маркер) — добавляется не более одного на путь и не занимает
-     *       слот лимита {@link TraceSettings#getMaxIds()};</li>
-     *   <li>непустой — добавляется, только если непустых ещё меньше {@code maxIds};
-     *       длина усекается до {@link TraceSettings#getMaxIdLength()}.</li>
-     * </ul>
-     *
-     * @param id идентификатор строки-источника (может быть {@code null} или пустым маркером)
+     * @param name уникальное имя аномалии
+     * @return {@code true}, если аномалия зафиксирована
      */
-    public void addTraceId(String id) {
-        if (id == null) {
-            return;
+    public boolean hasAnomaly(String name) {
+        if (ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
+            return isPolymorphicFormat();
         }
-        if (id.isEmpty()) {
-            if (!traceIds.contains("")) {
-                traceIds.add("");
-            }
-            return;
-        }
-        if (countNonEmpty() >= TraceSettings.getInstance().getMaxIds()) {
-            return;
-        }
-        String truncated = id;
-        int maxLength = TraceSettings.getInstance().getMaxIdLength();
-        if (truncated.length() > maxLength) {
-            truncated = truncated.substring(0, maxLength);
-        }
-        traceIds.add(truncated);
-    }
-
-    /** Количество непустых id в текущем списке (маркер {@code ""} не считается). */
-    private int countNonEmpty() {
-        int count = 0;
-        for (String id : traceIds) {
-            if (id != null && !id.isEmpty()) {
-                count++;
-            }
-        }
-        return count;
+        return anomalies.contains(name);
     }
 
     /**
-     * Возвращает собранные идентификаторы строк-источников для этого пути.
+     * Хранимые аномалии пути (без вычисляемой {@link #ANOMALY_POLYMORPHIC_FORMAT}), отсортированы по имени.
      *
-     * @return список идентификаторов (непустые первыми, маркер {@code ""} — в хвосте)
+     * @return неизменяемый вид множества имён
      */
-    public List<String> getTraceIds() {
-        return traceIds;
+    public Set<String> getAnomalies() {
+        return Collections.unmodifiableSet(anomalies);
+    }
+
+    /** @return {@code true}, если на пути доказано два и более написаний */
+    public boolean isPolymorphicFormat() {
+        return formats.size() >= 2;
     }
 
     /**
-     * Возвращает имя поля-источника trace_id ({@code null} — не установлен,
-     * {@code ""} — источник не найден).
+     * Добавляет пару строки-источника в {@code path_trace}.
      *
-     * @return ключ трассировки
+     * @param id    идентификатор строки-источника
+     * @param idKey имя поля-источника
      */
-    public String getTraceIdKey() {
-        return traceIdKey;
+    public void addPathTrace(String id, String idKey) {
+        if (pathTrace == null) {
+            pathTrace = new TraceEvidence();
+        }
+        pathTrace.add(id, idKey);
     }
 
     /**
-     * Прямая установка ключа трассировки (используется десериализатором сетевого пакета).
+     * Добавляет пару строки-источника в trace конкретной аномалии.
      *
-     * @param key имя поля-источника trace_id
+     * @param anomaly имя аномалии
+     * @param id      идентификатор строки-источника
+     * @param idKey   имя поля-источника
      */
-    public void setTraceIdKey(String key) {
-        this.traceIdKey = key;
+    public void addAnomalyTrace(String anomaly, String id, String idKey) {
+        anomalyTrace.computeIfAbsent(anomaly, k -> new TraceEvidence()).add(id, idKey);
     }
 
     /**
-     * Детерминированный выбор ключа трассировки при слиянии воркеров.
+     * Добавляет пару строки-источника в trace конкретного формата.
      *
-     * <p>Правило ассоциативно и коммутативно (корректно при многократном merge):</p>
-     * <ol>
-     *   <li>пустой ({@code null}/{@code ""}) уступает непустому;</li>
-     *   <li>оба в пресете {@link TraceSettings#getPreset()} — ключ с меньшим индексом (выше ранг);</li>
-     *   <li>ровно один в пресете — он побеждает (суффикс/explicit — fallback);</li>
-     *   <li>оба вне пресета — лексикографически меньший.</li>
-     * </ol>
-     *
-     * @param otherKey ключ трассировки, прилетевший с другого воркера
+     * @param format формат
+     * @param id     идентификатор строки-источника
+     * @param idKey  имя поля-источника
      */
-    public void mergeTraceIdKey(String otherKey) {
-        String a = this.traceIdKey;
-        String b = otherKey;
-        boolean aEmpty = (a == null || a.isEmpty());
-        boolean bEmpty = (b == null || b.isEmpty());
+    public void addFormatTrace(ValueFormat format, String id, String idKey) {
+        formatTrace.computeIfAbsent(format, k -> new TraceEvidence()).add(id, idKey);
+    }
 
-        if (aEmpty && bEmpty) {
-            this.traceIdKey = ("".equals(a) || "".equals(b)) ? "" : null;
-            return;
-        }
-        if (aEmpty) {
-            this.traceIdKey = b;
-            return;
-        }
-        if (bEmpty) {
-            return; // непустой a побеждает
-        }
+    /** @return trace появления пути или {@code null}, если trace не собирался */
+    public TraceEvidence getPathTrace() {
+        return pathTrace;
+    }
 
-        List<String> preset = TraceSettings.getInstance().getPreset();
-        int rankA = preset.indexOf(a);
-        int rankB = preset.indexOf(b);
-        if (rankA >= 0 && rankB >= 0) {
-            this.traceIdKey = (rankA <= rankB) ? a : b;
-        } else if (rankA < 0 && rankB >= 0) {
-            this.traceIdKey = b; // b в пресете — побеждает суффиксный/explicit a
-        } else if (rankA >= 0) {
-            // a в пресете — остаётся
-        } else {
-            this.traceIdKey = (a.compareTo(b) <= 0) ? a : b;
-        }
+    /** @return trace по аномалиям (имя → evidence), отсортирован по имени */
+    public Map<String, TraceEvidence> getAnomalyTrace() {
+        return Collections.unmodifiableMap(anomalyTrace);
+    }
+
+    /** @return trace по форматам (формат → evidence) в порядке объявления enum */
+    public Map<ValueFormat, TraceEvidence> getFormatTrace() {
+        return Collections.unmodifiableMap(formatTrace);
     }
 
     /**
      * Объединяет текущие метрики с метриками, прилетевшими с другого узла кластера.
-     * Реализует математику ассоциативного слияния для распределенной агрегации.
+     * Реализует математику ассоциативного, коммутативного и идемпотентного слияния.
      *
      * @param other метрики того же JSONPath, собранные на удаленном воркере Trino
      */
     public void merge(PathMetrics other) {
         if (other == null) return;
 
-        // Слияние множеств типов (накапливаем полиморфизм)
         this.types.addAll(other.types);
-
-        // Вычисление абсолютного максимума длины
         this.maxLength = Math.max(this.maxLength, other.maxLength);
+        this.formats.addAll(other.formats);
+        this.anomalies.addAll(other.anomalies);
 
-        // Слияние аномалий по правилу логического OR (дизъюнкция)
-        other.anomalies.forEach((key, val) -> {
-            if (val) {
-                this.anomalies.put(key, true);
+        if (other.pathTrace != null) {
+            if (this.pathTrace == null) {
+                this.pathTrace = new TraceEvidence();
             }
-        });
-
-        // Детерминированное слияние trace_ids:
-        // 1. union непустых из this/other в TreeSet (лексикографическая сортировка);
-        // 2. непустые занимают слоты max_ids первыми;
-        // 3. маркер "" (если был в любом из воркеров) добавляется в хвост при свободном слоте.
-        boolean hasEmptyMarker = this.traceIds.contains("") || other.traceIds.contains("");
-
-        TreeSet<String> union = new TreeSet<>();
-        for (String id : this.traceIds) {
-            if (id != null && !id.isEmpty()) {
-                union.add(id);
-            }
+            this.pathTrace.merge(other.pathTrace);
         }
-        for (String id : other.traceIds) {
-            if (id != null && !id.isEmpty()) {
-                union.add(id);
-            }
-        }
-
-        this.traceIds.clear();
-        int maxIds = TraceSettings.getInstance().getMaxIds();
-        for (String id : union) {
-            if (this.traceIds.size() >= maxIds) {
-                break;
-            }
-            this.traceIds.add(id);
-        }
-        if (hasEmptyMarker && this.traceIds.size() < maxIds) {
-            this.traceIds.add("");
-        }
-
-        // Детерминированный выбор ключа trace_id (см. mergeTraceIdKey)
-        this.mergeTraceIdKey(other.traceIdKey);
+        other.anomalyTrace.forEach((name, evidence) ->
+                this.anomalyTrace.computeIfAbsent(name, k -> new TraceEvidence()).merge(evidence));
+        other.formatTrace.forEach((format, evidence) ->
+                this.formatTrace.computeIfAbsent(format, k -> new TraceEvidence()).merge(evidence));
     }
 }

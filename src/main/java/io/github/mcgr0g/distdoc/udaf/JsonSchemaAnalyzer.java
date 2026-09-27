@@ -3,13 +3,18 @@ package io.github.mcgr0g.distdoc.udaf;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.mcgr0g.distdoc.udaf.anomalies.ArrayContext;
 import io.github.mcgr0g.distdoc.udaf.anomalies.ArrayAnomalyDetector;
 import io.github.mcgr0g.distdoc.udaf.anomalies.AnomalyDetector;
 import io.github.mcgr0g.distdoc.udaf.config.CoreSettings;
+import io.github.mcgr0g.distdoc.udaf.config.FormatSettings;
 import io.github.mcgr0g.distdoc.udaf.config.TraceSettings;
+import io.github.mcgr0g.distdoc.udaf.formats.FormatDetector;
+import io.github.mcgr0g.distdoc.udaf.formats.ValueFormat;
 import io.airlift.slice.Slice;
 import java.io.InputStream;
 import java.util.*;
@@ -48,6 +53,27 @@ public class JsonSchemaAnalyzer {
 
     /** Объектный маппер для декларативной сборки результирующего отчета без ручной склейки кавычек. */
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** Логгер JDK: в Trino попадает в server.log узла. */
+    private static final System.Logger LOG = System.getLogger(JsonSchemaAnalyzer.class.getName());
+
+    /** Действующие path hints numeric timestamp (секция {@code [format]} + env-override). */
+    private static final List<String> FORMAT_HINTS = FormatSettings.getInstance().getPathHints();
+
+    /** Ключи отчёта и внутреннего состояния (форма отчёта — docs/contracts/rx-data-contract.md). */
+    static final String FIELD_SCHEMA_VERSION = "schema_version";
+    static final String FIELD_TYPE = "type";
+    static final String FIELD_MAX_LENGTH = "max_length";
+    static final String FIELD_OBSERVED_FORMATS = "observed_formats";
+    static final String FIELD_ANOMALIES = "anomalies";
+    static final String FIELD_DETECTED = "detected";
+    static final String FIELD_TRACE = "trace";
+    static final String FIELD_PATH_TRACE = "path_trace";
+    static final String FIELD_ID = "id";
+    static final String FIELD_ID_KEY = "id_key";
+    static final String FIELD_FORMAT = "format";
+    /** Только во внутреннем состоянии между воркерами: trace по форматам (источник trace полиморфизма). */
+    static final String FIELD_FORMAT_TRACE = "format_trace";
 
     /** Подключаемый плагин-детектор dbt-аномалий в массивах. */
     private final ArrayAnomalyDetector anomalyDetector = new AnomalyDetector();
@@ -92,8 +118,11 @@ public class JsonSchemaAnalyzer {
     /** Пути, впервые встреченные в текущей строке (новые узлы). */
     private final Set<String> newPathsThisRow = new HashSet<>();
 
-    /** Пути с аномалией, впервые зафиксированной в текущей строке. */
-    private final Set<String> anomalyPathsThisRow = new HashSet<>();
+    /** Аномалии, впервые зафиксированные в текущей строке: путь -> имена аномалий. */
+    private final Map<String, Set<String>> newAnomaliesThisRow = new HashMap<>();
+
+    /** Форматы, впервые доказанные в текущей строке: путь -> форматы. */
+    private final Map<String, Set<ValueFormat>> newFormatsThisRow = new HashMap<>();
 
     /**
      * Возвращает мутабельную карту собранной схемы.
@@ -165,7 +194,8 @@ public class JsonSchemaAnalyzer {
         suffixHitValue = null;
         suffixHitField = null;
         newPathsThisRow.clear();
-        anomalyPathsThisRow.clear();
+        newAnomaliesThisRow.clear();
+        newFormatsThisRow.clear();
     }
 
     /** Активен ли trace-режим (явный или пресет) на текущей строке. */
@@ -262,15 +292,35 @@ public class JsonSchemaAnalyzer {
             return; // обычный режим: trace выключен
         }
 
-        // Новый узел и аномалия в одной строке — тот же id строки; множества объединяем, чтобы не дублировать
-        Set<String> targetPaths = new HashSet<>(newPathsThisRow);
-        targetPaths.addAll(anomalyPathsThisRow);
-        for (String path : targetPaths) {
-            PathMetrics metrics = schemaMap.get(path);
-            if (metrics != null) {
-                metrics.addTraceId(traceId);
-                metrics.mergeTraceIdKey(traceIdKey);
+        // Одна пара {id, id_key} кладётся в каждый scope, который строка затронула впервые:
+        // появление пути, каждая новая аномалия и каждый новый формат — независимые коллекции
+        for (String path : newPathsThisRow) {
+            schemaMap.get(path).addPathTrace(traceId, traceIdKey);
+        }
+        for (Map.Entry<String, Set<String>> e : newAnomaliesThisRow.entrySet()) {
+            PathMetrics metrics = schemaMap.get(e.getKey());
+            for (String name : e.getValue()) {
+                metrics.addAnomalyTrace(name, traceId, traceIdKey);
             }
+        }
+        for (Map.Entry<String, Set<ValueFormat>> e : newFormatsThisRow.entrySet()) {
+            PathMetrics metrics = schemaMap.get(e.getKey());
+            for (ValueFormat format : e.getValue()) {
+                metrics.addFormatTrace(format, traceId, traceIdKey);
+            }
+        }
+    }
+
+    /**
+     * Фиксирует доказанный формат скаляра на его пути (scalar-leaf, docs/contracts/value-formats.md);
+     * в trace-режиме новый для пути формат запоминается для раскладки id в конце строки.
+     *
+     * @param path   путь скалярного значения
+     * @param format формат или {@code null} (не доказан)
+     */
+    private void recordFormat(String path, ValueFormat format) {
+        if (format != null && getOrCreateMetrics(path).addFormat(format) && isTraceActive()) {
+            newFormatsThisRow.computeIfAbsent(path, k -> EnumSet.noneOf(ValueFormat.class)).add(format);
         }
     }
 
@@ -344,6 +394,8 @@ public class JsonSchemaAnalyzer {
 
                 case VALUE_NUMBER_FLOAT:
                     getOrCreateMetrics(currentPath).addType("DOUBLE");
+                    recordFormat(currentPath, FormatDetector.detectDouble(
+                            parser.getDoubleValue(), FormatDetector.numericContext(currentPath, FORMAT_HINTS)));
                     if (isInsideArray(pathStack)) invalidateFlatArrayFlags();
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
@@ -391,6 +443,7 @@ public class JsonSchemaAnalyzer {
 
         getOrCreateMetrics(currentPath).addType("VARCHAR");
         getOrCreateMetrics(currentPath).updateLength(parser.getTextLength());
+        recordFormat(currentPath, FormatDetector.detectString(text, currentPath, FORMAT_HINTS));
 
         // Если строка лежит внутри массива, логируем её значение в контекст аномалий
         if (isInsideArray(pathStack) && text != null && !arrayElementsStack.isEmpty()) {
@@ -410,6 +463,12 @@ public class JsonSchemaAnalyzer {
         collectTraceValue(currentPath, parser.getText());
 
         getOrCreateMetrics(currentPath).addType("INTEGER");
+        // Значения вне диапазона long (BIG_INTEGER) Unix-временем не считаются
+        JsonParser.NumberType numberType = parser.getNumberType();
+        if (numberType == JsonParser.NumberType.INT || numberType == JsonParser.NumberType.LONG) {
+            recordFormat(currentPath, FormatDetector.detectInteger(
+                    parser.getLongValue(), FormatDetector.numericContext(currentPath, FORMAT_HINTS)));
+        }
         if (isInsideArray(pathStack) && !arrayElementsStack.isEmpty()) {
             List<String> currentArrayElements = arrayElementsStack.peek();
             if (currentArrayElements != null) {
@@ -432,33 +491,20 @@ public class JsonSchemaAnalyzer {
 
             PathMetrics metrics = getOrCreateMetrics(finishedArrayPath);
 
-            // Запоминаем существующие true-флаги аномалий до детекции (для фиксации новых в trace-режиме)
-            Set<String> existingTrueAnomalies = null;
-            if (isTraceActive()) {
-                existingTrueAnomalies = new HashSet<>();
-                for (Map.Entry<String, Boolean> e : metrics.getAnomalies().entrySet()) {
-                    if (e.getValue()) {
-                        existingTrueAnomalies.add(e.getKey());
-                    }
-                }
-            }
+            // Снимок аномалий до детекции (в trace-режиме — чтобы найти впервые зафиксированные)
+            Set<String> before = isTraceActive() ? Set.copyOf(metrics.getAnomalies()) : null;
 
             // Декларативно делегируем анализ выделенной стратегии
             ArrayContext context = new ArrayContext(finishedArrayPath, elements, allStrings, allNumbers);
             anomalyDetector.detect(context, metrics);
 
-            // Если детектор зажёг новый true-флаг — в trace-режиме путь получает id строки
-            // (id-поле может идти в документе ПОСЛЕ массива, поэтому резолв отложен в resolveTraceId)
-            if (existingTrueAnomalies != null) {
-                boolean newAnomaly = false;
-                for (Map.Entry<String, Boolean> e : metrics.getAnomalies().entrySet()) {
-                    if (e.getValue() && !existingTrueAnomalies.contains(e.getKey())) {
-                        newAnomaly = true;
-                        break;
+            // Каждая новая аномалия получает свой trace scope; id-поле может идти в документе
+            // ПОСЛЕ массива, поэтому резолв отложен в resolveTraceId
+            if (before != null && metrics.getAnomalies().size() > before.size()) {
+                for (String name : metrics.getAnomalies()) {
+                    if (!before.contains(name)) {
+                        newAnomaliesThisRow.computeIfAbsent(finishedArrayPath, k -> new TreeSet<>()).add(name);
                     }
-                }
-                if (newAnomaly) {
-                    anomalyPathsThisRow.add(finishedArrayPath);
                 }
             }
         }
@@ -554,43 +600,194 @@ public class JsonSchemaAnalyzer {
     }
 
     /**
-     * Декларативная сборка итогового JSON-отчета через Jackson ObjectNode.
-     * Гарантирует стопроцентное соблюдение синтаксиса JSON, автоматически экранирует
-     * специальные символы и динамически выгружает все флаги аномалий, переданные детекторами.
+     * Декларативная сборка итогового rx-data (контракт 2.0) через Jackson ObjectNode.
+     * Пути записываются в лексикографическом порядке; на пути — {@code type}, {@code max_length},
+     * {@code observed_formats?}, {@code anomalies?} ({@code {detected, trace?}}), {@code path_trace?}.
+     * Trace {@code is_polymorphic_format} собирается из trace форматов: элементы несут поле {@code format}.
      *
      * @return сериализованная JSON-строка отчета по всей структуре документа
      */
     public String buildJsonReport() {
+        return buildJson(false);
+    }
+
+    /**
+     * Сборка внутреннего состояния для передачи между воркерами ({@link SchemaStateSerializer}).
+     * Отличия от отчёта: вычисляемая аномалия {@code is_polymorphic_format} не пишется (восстанавливается
+     * из форматов), trace форматов пишется как есть в {@code format_trace}.
+     *
+     * @return сериализованная JSON-строка состояния
+     */
+    public String buildStateJson() {
+        return buildJson(true);
+    }
+
+    private String buildJson(boolean internal) {
         ObjectNode rootNode = MAPPER.createObjectNode();
 
         // Версия схемы rx-data (major.minor): корневой служебный ключ, присутствует во всех режимах
-        rootNode.put("schema_version", CoreSettings.getSchemaVersion());
+        rootNode.put(FIELD_SCHEMA_VERSION, CoreSettings.getSchemaVersion());
 
-        schemaMap.forEach((path, metrics) -> {
-            ObjectNode metricsNode = MAPPER.createObjectNode();
-            metricsNode.put("type", metrics.getFinalType());
-            metricsNode.put("max_length", metrics.getMaxLength());
+        new TreeMap<>(schemaMap).forEach((path, metrics) -> {
+            ObjectNode metricsNode = rootNode.putObject(path);
+            metricsNode.put(FIELD_TYPE, metrics.getFinalType());
+            metricsNode.put(FIELD_MAX_LENGTH, metrics.getMaxLength());
 
-            // Динамически выгружаем все зарегистрированные аномалии в итоговый JSON
-            metrics.getAnomalies().forEach(metricsNode::put);
+            if (!metrics.getFormats().isEmpty()) {
+                ArrayNode formatsNode = metricsNode.putArray(FIELD_OBSERVED_FORMATS);
+                metrics.getFormats().forEach(f -> formatsNode.add(f.name()));
+            }
 
-            // Трассировочные id строк-источников (ключ присутствует только в trace-режиме)
-            if (!metrics.getTraceIds().isEmpty()) {
-                metricsNode.set("trace_ids", MAPPER.valueToTree(metrics.getTraceIds()));
-                // Имя поля-источника trace_id (выводится и "" — маркер неизвестного источника);
-                // присутствует только вместе с trace_ids
-                if (metrics.getTraceIdKey() != null) {
-                    metricsNode.put("trace_id_key", metrics.getTraceIdKey());
+            TreeSet<String> names = new TreeSet<>(metrics.getAnomalies());
+            if (!internal && metrics.isPolymorphicFormat()) {
+                names.add(PathMetrics.ANOMALY_POLYMORPHIC_FORMAT);
+            }
+            if (!names.isEmpty()) {
+                ObjectNode anomaliesNode = metricsNode.putObject(FIELD_ANOMALIES);
+                for (String name : names) {
+                    ObjectNode anomalyNode = anomaliesNode.putObject(name);
+                    anomalyNode.put(FIELD_DETECTED, true);
+                    if (PathMetrics.ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
+                        ArrayNode traceNode = MAPPER.createArrayNode();
+                        metrics.getFormatTrace().forEach((format, evidence) ->
+                                writeTrace(traceNode, evidence, format));
+                        if (!traceNode.isEmpty()) {
+                            anomalyNode.set(FIELD_TRACE, traceNode);
+                        }
+                    } else {
+                        TraceEvidence evidence = metrics.getAnomalyTrace().get(name);
+                        if (evidence != null && !evidence.isEmpty()) {
+                            writeTrace(anomalyNode.putArray(FIELD_TRACE), evidence, null);
+                        }
+                    }
                 }
             }
 
-            rootNode.set(path, metricsNode);
+            TraceEvidence pathTrace = metrics.getPathTrace();
+            if (pathTrace != null && !pathTrace.isEmpty()) {
+                writeTrace(metricsNode.putArray(FIELD_PATH_TRACE), pathTrace, null);
+            }
+
+            if (internal && !metrics.getFormatTrace().isEmpty()) {
+                ObjectNode formatTraceNode = metricsNode.putObject(FIELD_FORMAT_TRACE);
+                metrics.getFormatTrace().forEach((format, evidence) ->
+                        writeTrace(formatTraceNode.putArray(format.name()), evidence, null));
+            }
         });
 
         try {
             return MAPPER.writeValueAsString(rootNode);
         } catch (Exception e) {
-            return "{}";
+            // Паттерн 5: сбой маршалинга не роняет запрос — пустая схема той же версии
+            LOG.log(System.Logger.Level.WARNING, "analyze_json_schema: не удалось сериализовать схему", e);
+            return "{\"" + FIELD_SCHEMA_VERSION + "\":\"" + CoreSettings.getSchemaVersion() + "\"}";
+        }
+    }
+
+    /** Дописывает пары evidence в массив trace; {@code format} (если не {@code null}) — поле каждого элемента. */
+    private static void writeTrace(ArrayNode target, TraceEvidence evidence, ValueFormat format) {
+        for (TraceEvidence.Pair pair : evidence.items()) {
+            ObjectNode item = target.addObject();
+            item.put(FIELD_ID, pair.id());
+            item.put(FIELD_ID_KEY, pair.idKey());
+            if (format != null) {
+                item.put(FIELD_FORMAT, format.name());
+            }
+        }
+    }
+
+    /**
+     * Восстанавливает анализатор из внутреннего состояния ({@link JsonSchemaAnalyzer#buildStateJson()}).
+     *
+     * <p><b>Fault tolerance (паттерн 5, docs/patterns/plugin.md):</b> сбой разбора не роняет SQL-запрос.
+     * Путь со служебным полем или форматом вне whitelist (состояние от воркера другой версии плагина)
+     * пропускается целиком, остальные пути сохраняются; невалидный JSON даёт пустое состояние
+     * воркера. Каждый пропуск — {@code WARNING} в логе сервера Trino с путём и причиной.
+     * Ключи-пути ({@code $.x}, {@code $.x[*].y}) — данные и не проверяются: полиморфизм
+     * бизнес-объектов сюда не относится.</p>
+     *
+     * @param serializedData JSON состояния
+     * @return анализатор с восстановленной (возможно, частично) картой путей
+     */
+    static JsonSchemaAnalyzer fromStateJson(String serializedData) {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        JsonNode root;
+        try {
+            root = MAPPER.readTree(serializedData);
+        } catch (Exception e) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "analyze_json_schema: состояние воркера не разобрано (невалидный JSON), вклад воркера потерян", e);
+            return analyzer;
+        }
+
+        Map<String, PathMetrics> schemaMap = analyzer.getSchemaMap();
+        Iterator<Map.Entry<String, JsonNode>> paths = root.fields();
+        while (paths.hasNext()) {
+            Map.Entry<String, JsonNode> entry = paths.next();
+            // Корневой служебный ключ версии схемы не является jsonpath-узлом схемы
+            if (entry.getKey().equals(FIELD_SCHEMA_VERSION)) {
+                continue;
+            }
+            try {
+                schemaMap.put(entry.getKey(), readMetrics(entry.getValue()));
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "analyze_json_schema: путь " + entry.getKey()
+                        + " пропущен при слиянии воркеров: " + e.getMessage()
+                        + " (разные версии плагина на узлах?)");
+            }
+        }
+        return analyzer;
+    }
+
+    private static PathMetrics readMetrics(JsonNode node) {
+        PathMetrics metrics = new PathMetrics();
+        Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            JsonNode value = field.getValue();
+            switch (field.getKey()) {
+                case FIELD_TYPE -> metrics.addType(value.asText());
+                case FIELD_MAX_LENGTH -> metrics.updateLength(value.asLong());
+                case FIELD_OBSERVED_FORMATS -> {
+                    for (JsonNode f : value) {
+                        metrics.addFormat(parseFormat(f.asText()));
+                    }
+                }
+                case FIELD_ANOMALIES -> value.fields().forEachRemaining(a -> {
+                    String name = a.getKey();
+                    if (PathMetrics.ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
+                        return; // вычисляется из форматов
+                    }
+                    metrics.markAnomaly(name);
+                    JsonNode trace = a.getValue().get(FIELD_TRACE);
+                    if (trace != null) {
+                        for (JsonNode item : trace) {
+                            metrics.addAnomalyTrace(name, item.get(FIELD_ID).asText(), item.get(FIELD_ID_KEY).asText());
+                        }
+                    }
+                });
+                case FIELD_PATH_TRACE -> {
+                    for (JsonNode item : value) {
+                        metrics.addPathTrace(item.get(FIELD_ID).asText(), item.get(FIELD_ID_KEY).asText());
+                    }
+                }
+                case FIELD_FORMAT_TRACE -> value.fields().forEachRemaining(f -> {
+                    ValueFormat format = parseFormat(f.getKey());
+                    for (JsonNode item : f.getValue()) {
+                        metrics.addFormatTrace(format, item.get(FIELD_ID).asText(), item.get(FIELD_ID_KEY).asText());
+                    }
+                });
+                default -> throw new IllegalStateException("служебное поле вне whitelist: " + field.getKey());
+            }
+        }
+        return metrics;
+    }
+
+    private static ValueFormat parseFormat(String name) {
+        try {
+            return ValueFormat.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException("неизвестный формат: " + name, e);
         }
     }
 }

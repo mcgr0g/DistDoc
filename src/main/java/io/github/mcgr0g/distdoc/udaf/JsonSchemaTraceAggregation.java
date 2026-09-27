@@ -81,7 +81,7 @@ public final class JsonSchemaTraceAggregation {
             return;
         }
 
-        // Генерируем финальный JSON-отчет с типами, флагами аномалий и trace_ids
+        // Генерируем финальный rx-data с типами, форматами, аномалиями и trace evidence
         String finalReportJson = state.getAnalyzer().buildJsonReport();
 
         // Записываем результат в выходной поток Trino

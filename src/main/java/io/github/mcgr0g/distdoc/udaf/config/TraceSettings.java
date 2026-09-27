@@ -1,31 +1,33 @@
 package io.github.mcgr0g.distdoc.udaf.config;
 
-import org.tomlj.TomlArray;
 import org.tomlj.TomlTable;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * Настройки трассировки идентификаторов для отчёта {@code .rx.json}: секция {@code [trace]}
- * файла {@code /app-config.toml}.
+ * файла {@code /app-config.toml}. Правила трассировки — docs/testing/tracing.md.
  *
- * <p>Класс является финальным синглтоном со статической ленивой инициализацией: секция
- * читается через {@link AppConfig} ровно один раз при первом обращении к {@link #getInstance()}.</p>
+ * <p>Сделано по аналогии с {@link FormatSettings} (синглтон, отсутствие дефолтов в коде,
+ * env-override CSV, фабрика {@link #from(TomlTable, Function)} для детерминированных тестов) —
+ * общие механизмы описаны там. Здесь — только отличия.</p>
  *
- * <p>Пресет и суффикс могут быть переопределены переменными окружения
- * {@code DISTDOC_TRACE_PRESET} (CSV через запятую) и {@code DISTDOC_TRACE_SUFFIX}:
- * заданная непустая переменная полностью заменяет значение из {@code [trace]},
- * иначе берётся значение из toml. Лимиты {@code max_ids}/{@code max_id_length}
+ * <p>Переопределяются пресет ({@code DISTDOC_TRACE_PRESET}, CSV) и суффикс
+ * ({@code DISTDOC_TRACE_SUFFIX}). Лимиты {@code max_ids}/{@code max_id_length}
  * переопределению не подлежат.</p>
  *
  * @see io.github.mcgr0g.distdoc.udaf.JsonSchemaAnalyzer
  */
 public final class TraceSettings {
 
+    /** Имена env-переменных, переопределяющих пресет и суффикс. */
+    static final String ENV_PRESET = "DISTDOC_TRACE_PRESET";
+    static final String ENV_SUFFIX = "DISTDOC_TRACE_SUFFIX";
+
     /** Лениво инициализируемый экземпляр настроек (инициализация при первом обращении). */
-    private static final TraceSettings INSTANCE = load();
+    private static final TraceSettings INSTANCE = from(AppConfig.section("trace"), System::getenv);
 
     private final int maxIds;
     private final int maxIdLength;
@@ -103,52 +105,29 @@ public final class TraceSettings {
     }
 
     /**
-     * Читает секцию {@code [trace]} через {@link AppConfig} и собирает настройки,
-     * переопределяя пресет и суффикс значениями переменных окружения (если заданы).
-     * Ресурс внутренний и контролируемый: любая ошибка чтения или парсинга —
-     * {@link IllegalStateException}, дефолтов в коде нет.
+     * Собирает настройки из секции {@code [trace]} и источника переменных окружения.
      *
+     * @param trace секция {@code [trace]}
+     * @param env   источник env-переменных (в рантайме {@code System::getenv})
      * @return собранные настройки
      */
-    private static TraceSettings load() {
-        TomlTable trace = AppConfig.section("trace");
+    static TraceSettings from(TomlTable trace, Function<String, String> env) {
         int maxIds = trace.getLong("max_ids").intValue();
         int maxIdLength = trace.getLong("max_id_length").intValue();
-        List<String> preset = resolvePreset(System.getenv("DISTDOC_TRACE_PRESET"), parsePreset(trace.getArray("preset")));
-        String suffix = resolveSuffix(System.getenv("DISTDOC_TRACE_SUFFIX"), trace.getString("suffix"));
+        List<String> preset = resolvePreset(env.apply(ENV_PRESET), AppConfig.stringList(trace.getArray("preset")));
+        String suffix = resolveSuffix(env.apply(ENV_SUFFIX), trace.getString("suffix"));
         return new TraceSettings(maxIds, maxIdLength, preset, suffix);
     }
 
     /**
-     * Десериализует TOML-массив пресета в список.
-     *
-     * @param arr массив из секции {@code [trace]}
-     * @return список элементов массива
-     */
-    private static List<String> parsePreset(TomlArray arr) {
-        List<String> preset = new ArrayList<>(arr.size());
-        for (int i = 0; i < arr.size(); i++) {
-            preset.add(arr.getString(i));
-        }
-        return preset;
-    }
-
-    /**
-     * Разрешает пресет: заданная (не {@code null} и не blank) env-переменная полностью
-     * заменяет toml-пресет; формат — CSV через запятую, элементы тримятся, пустые отбрасываются.
+     * Разрешает пресет по общему правилу {@link AppConfig#resolveCsvOverride(String, List)}.
      *
      * @param envValue значение {@code DISTDOC_TRACE_PRESET} (может быть {@code null})
      * @param fallback пресет из {@code [trace]}
      * @return действующий пресет
      */
     static List<String> resolvePreset(String envValue, List<String> fallback) {
-        if (envValue == null || envValue.isBlank()) {
-            return fallback;
-        }
-        return Arrays.stream(envValue.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toList();
+        return AppConfig.resolveCsvOverride(envValue, fallback);
     }
 
     /**
