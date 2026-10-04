@@ -67,7 +67,7 @@ protected QueryRunner createQueryRunner() throws Exception {
 ## 1. Файл конфигурации
 Располагается по пути `src/testFixtures/resources/fixtures.toml`: одна запись `[[scenarios]]` на таблицу.
 Состав таблиц и ожидание каждой — [fixture-matrix.md](fixture-matrix.md) (префикс имени = ось проверки:
-`fmt_`, `arr_`, `pol_`, `trace_`). Типовой фрагмент:
+`fmt_`, `arr_`, `pol_`, `obj_`, `trace_`). Типовой фрагмент:
 ```toml
 [[scenarios]]
 # Все группы вместе, детерминированно по index (fixture-matrix §4)
@@ -114,7 +114,7 @@ file = "build/dev-lakehouse/data/pol_created_at_formats.jsonl"
 
 ### Спецификация полей и их назначение:
 
-1.  **`_id.$oid` (VARCHAR)**: вложенный BSON-идентификатор документа MongoDB вместо плоского `tx_id`; отлаживает рекурсивный парсер путей верхнего уровня (`$._id.$oid`).
+1.  **`_id.$oid` (VARCHAR)**: вложенный BSON-идентификатор документа MongoDB вместо плоского `tx_id`; отлаживает рекурсивный парсер путей верхнего уровня (`$._id.$oid`). Сам объект `_id` (как `version` и `doc_meta`) даёт в rx-data 3.0 узел `type: "OBJECT"` во всех таблицах.
 2.  **`customer_rating` (INTEGER → DOUBLE)**: в чистых сценариях INTEGER (`numberBetween(1,5)`); DOUBLE подмешивают `rating_promotion` и `pol_created_at_with_rating` (нечётные строки) и `all` (`i%5<2`) — числовая решётка ядра поднимает итог до DOUBLE (без потери данных, заметно в git diff); ложных аномалий в схеме не порождает.
 3.  **`payment_dates` (ARRAY)**: Честный массив оплат. Используется строго для детекции пустых массивов (`[]`) или валидных списков ISO-дат `["2026-06-01", "2026-06-02"]`.
 4.  **`birth_date` (VARCHAR / ARRAY)**: Поле-хамелеон со структурным хаосом.
@@ -134,6 +134,16 @@ file = "build/dev-lakehouse/data/pol_created_at_formats.jsonl"
     id. По `i%4`: `_id.$oid` (базовая запись), `id` = `id-…` без `_id`, `order_id` = `ord-…`
     без `_id`/`id` (suffix-fallback пресета), строка без id. Префикс значения однозначно
     задаёт ожидаемый `id_key` — тесты ловят ложную пару `{id, id_key}`.
+13. **`counterparties` / `party` / `profile` / `items` / `contact` (структурные поля, только в `obj_*` и `all`)**:
+    эмуляция источника, где на одном пути лежат разные структуры. Полиморфное поле — в одних строках
+    объект (`{"name": "…"}`), в других массив объектов (`[{"share": 50}, …]`): в `all` поле
+    `counterparties` (группа `counterparties_shape`, `i%3==0` — массив), в `obj_object_or_array` поле
+    `party` (`i%2`). Остальные структурные поля: `profile` — вложенные объекты и пустой `{}`
+    (`obj_nested_plain`), `items` — массив объектов с вложенным объектом `dims`
+    (`obj_array_of_objects`), `contact` — объект или строка `"n/a"` (`obj_object_or_scalar`),
+    `signed_at` внутри `party` — формат дат по ветке (`obj_object_or_array_formats`).
+    Отлаживают узлы `type: "OBJECT"`, независимость веток `P` и `P[*]` и разведение `_obj`/`_arr`
+    в генераторе (контракт rx-data 3.0, раздел 2b).
 
 ## 3. Структура таблиц в Trino
 
@@ -141,7 +151,7 @@ file = "build/dev-lakehouse/data/pol_created_at_formats.jsonl"
 
 ### А. Таблицы сырого хаоса 
 
-Все таблицы `fixtures.toml`: `crm_combined`, `clean`, `fmt_*`, `arr_*`, `pol_*`, `trace_*`.
+Все таблицы `fixtures.toml`: `crm_combined`, `clean`, `fmt_*`, `arr_*`, `pol_*`, `obj_*`, `trace_*`.
 Используют Staging-паттерн со строго **одной текстовой колонкой**. Это необходимо, чтобы Trino не падал при чтении структурных мутаций (например, когда вместо строки в `birth_date` прилетает массив), а отдавал сырой JSON целиком в UDAF-плагин для анализа:
 ```sql
 CREATE TABLE lakehouse.default.crm_raw_combined (
