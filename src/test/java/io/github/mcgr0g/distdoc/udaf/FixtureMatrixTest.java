@@ -24,6 +24,7 @@ import java.util.TreeSet;
 import java.util.function.BiConsumer;
 import java.util.function.LongPredicate;
 
+import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_JSON_STRING;
 import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_POLYMORPHIC_FORMAT;
 import static io.github.mcgr0g.distdoc.udaf.anomalies.AnomalyDetector.METRIC_IS_DATE_PART;
 import static io.github.mcgr0g.distdoc.udaf.anomalies.AnomalyDetector.METRIC_IS_EMPTY;
@@ -50,6 +51,11 @@ public class FixtureMatrixTest {
     private static final String DATE = "DATE_ONLY";
     private static final String OFFSET = "OFFSET_DATETIME";
 
+    /** Узел объекта (контракт rx-data 3.0, раздел 2b): без форматов и аномалий. */
+    private static final Row OBJECT = Row.of("OBJECT", List.of());
+    private static final Row VARCHAR = Row.of("VARCHAR", List.of());
+    private static final Row INTEGER = Row.of("INTEGER", List.of());
+
     /** Смысловая строка отчёта для пути: type, observed_formats (порядок enum), имена аномалий. */
     record Row(String type, List<String> formats, Set<String> anomalies) {
         static Row of(String type, List<String> formats, String... anomalies) {
@@ -60,6 +66,7 @@ public class FixtureMatrixTest {
     /** fixture-matrix §0: базовая запись без мутаций. */
     private static Map<String, Row> base() {
         Map<String, Row> m = new TreeMap<>();
+        m.put("$._id", OBJECT);
         m.put("$._id.$oid", Row.of("VARCHAR", List.of()));
         m.put("$.customer_rating", Row.of("INTEGER", List.of()));
         m.put("$.payment_dates[*]", Row.of("VARCHAR", List.of(DATE), METRIC_IS_STRING_ARRAY));
@@ -67,9 +74,12 @@ public class FixtureMatrixTest {
         m.put("$.created_at", Row.of("VARCHAR", List.of(LOCAL)));
         m.put("$.updated_at", Row.of("VARCHAR", List.of(OFFSET)));
         m.put("$.promo_expiry_date", Row.of("VARCHAR", List.of(DATE)));
+        m.put("$.metadata_encoded", Row.of("VARCHAR", List.of(), ANOMALY_JSON_STRING));
         m.put("$.metadata_encoded.user_agent", Row.of("VARCHAR", List.of()));
         m.put("$.metadata_encoded.retry_count", Row.of("INTEGER", List.of()));
+        m.put("$.version", OBJECT);
         m.put("$.version.$numberLong", Row.of("INTEGER", List.of()));
+        m.put("$.doc_meta", OBJECT);
         m.put("$.doc_meta.@type", Row.of("VARCHAR", List.of()));
         m.put("$.doc_meta.@version", Row.of("INTEGER", List.of()));
         return m;
@@ -103,6 +113,28 @@ public class FixtureMatrixTest {
                 m.put("$.created_at", POLY_CREATED_AT);
                 m.put("$.customer_rating", Row.of("DOUBLE", List.of()));
             }
+            case "obj_nested_plain" -> {
+                m.put("$.profile", OBJECT);
+                m.put("$.profile.contacts", OBJECT);
+                m.put("$.profile.contacts.email", VARCHAR);
+                m.put("$.profile.contacts.phone", VARCHAR);
+                m.put("$.profile.flags", OBJECT); // пустой объект узел имеет
+            }
+            case "obj_array_of_objects" -> {
+                // Узла $.items нет; объект-элемент узла не имеет, объект внутри элемента (dims) — имеет
+                m.put("$.items[*]", Row.of("ARRAY", List.of()));
+                m.put("$.items[*].sku", VARCHAR);
+                m.put("$.items[*].qty", INTEGER);
+                m.put("$.items[*].dims", OBJECT);
+                m.put("$.items[*].dims.w", INTEGER);
+                m.put("$.items[*].dims.h", INTEGER);
+            }
+            case "obj_object_or_array" -> putParty(m, null, null);
+            case "obj_object_or_scalar" -> {
+                m.put("$.contact", VARCHAR); // смешение OBJECT со скаляром → VARCHAR; форма — по детям
+                m.put("$.contact.email", VARCHAR);
+            }
+            case "obj_object_or_array_formats" -> putParty(m, LOCAL, DATE);
             case "trace_mixed_sources" -> {
                 m.put("$.id", Row.of("VARCHAR", List.of()));
                 m.put("$.order_id", Row.of("VARCHAR", List.of()));
@@ -115,10 +147,31 @@ public class FixtureMatrixTest {
                 m.put("$.payment_dates[*]", Row.of("VARCHAR", List.of(DATE), METRIC_IS_EMPTY, METRIC_IS_STRING_ARRAY));
                 m.put("$.customer_rating", Row.of("DOUBLE", List.of()));
                 m.put("$.surrogate_pk", Row.of("VARCHAR", List.of()));
+                m.put("$.counterparties", OBJECT);
+                m.put("$.counterparties.name", VARCHAR);
+                m.put("$.counterparties[*]", Row.of("ARRAY", List.of()));
+                m.put("$.counterparties[*].share", INTEGER);
             }
             default -> fail("Таблица " + table + " из fixtures.toml не описана в fixture-matrix.md и в этом тесте");
         }
         return m;
+    }
+
+    /**
+     * Полиморфное поле party: объектная ветка ($.party, $.party.*) и массивная ($.party[*], $.party[*].*) независимы.
+     * {@code objSignedAt}/{@code arrSignedAt} — написание signed_at по ветке (null — поля нет).
+     */
+    private static void putParty(Map<String, Row> m, String objSignedAt, String arrSignedAt) {
+        m.put("$.party", OBJECT);
+        m.put("$.party.name", VARCHAR);
+        m.put("$.party.role", VARCHAR);
+        m.put("$.party[*]", Row.of("ARRAY", List.of()));
+        m.put("$.party[*].id", VARCHAR);
+        m.put("$.party[*].share", INTEGER);
+        if (objSignedAt != null) {
+            m.put("$.party.signed_at", Row.of("VARCHAR", List.of(objSignedAt)));
+            m.put("$.party[*].signed_at", Row.of("VARCHAR", List.of(arrSignedAt)));
+        }
     }
 
     // ------------------------------------------------------------------ реестр
@@ -130,6 +183,8 @@ public class FixtureMatrixTest {
                         "fmt_updated_at_offset", "fmt_promo_expiry_date", "fmt_customer_rating_promotion",
                         "arr_birth_date_parts", "arr_payment_dates_empty",
                         "pol_created_at_formats", "pol_created_at_with_arrays", "pol_created_at_with_rating",
+                        "obj_nested_plain", "obj_array_of_objects", "obj_object_or_array", "obj_object_or_scalar",
+                        "obj_object_or_array_formats",
                         "trace_mixed_sources"),
                 TABLES.keySet(), "состав fixtures.toml разошёлся с fixture-matrix.md");
         TABLES.forEach((name, t) -> {
@@ -153,6 +208,48 @@ public class FixtureMatrixTest {
                 "millis — число, длины строки нет");
         assertEquals(25, report("pol_created_at_formats", null).at("/$.created_at/max_length").asInt(),
                 "самое длинное написание — offset");
+    }
+
+    @Test
+    public void testJsonStringPathLengthFromMatrix() {
+        assertEquals(43, report("clean", null).at("/$.metadata_encoded/max_length").asInt(),
+                "длина исходной строки с JSON (сырая колонка генератора)");
+    }
+
+    // ------------------------------------------------------------------ структура объектов (§1a)
+
+    @Test
+    public void testObjectAndArrayBranchesAreIndependent() {
+        Map<String, Row> rows = rows(report("obj_object_or_array", null));
+        for (String absent : List.of("$.party.id", "$.party.share", "$.party[*].name", "$.party[*].role")) {
+            assertFalse(rows.containsKey(absent), "поддеревья веток пересеклись: " + absent);
+        }
+        assertEquals("OBJECT", rows.get("$.party").type(), "$.party не сливается в VARCHAR");
+        assertEquals("ARRAY", rows.get("$.party[*]").type());
+        assertTrue(rows.get("$.party[*]").anomalies().isEmpty(), "массив объектов не пуст: " + rows.get("$.party[*]"));
+    }
+
+    @Test
+    public void testArrayOfObjectsHasNoObjectNodeAndIsNotEmpty() {
+        Map<String, Row> rows = rows(report("obj_array_of_objects", null));
+        assertFalse(rows.containsKey("$.items"), "узла $.items нет: поле только массив");
+        assertTrue(rows.get("$.items[*]").anomalies().isEmpty(), "массив объектов не пуст: " + rows.get("$.items[*]"));
+    }
+
+    @Test
+    public void testObjectOrScalarKeepsStringLength() {
+        JsonNode contact = report("obj_object_or_scalar", null).get("$.contact");
+        assertEquals("VARCHAR", contact.get("type").asText());
+        assertEquals(3, contact.get("max_length").asInt(), "длина строки \"n/a\"; объект длину не меняет");
+    }
+
+    @Test
+    public void testObjectAndArrayTraceComesFromOwnGroup() {
+        JsonNode root = report("obj_object_or_array", PRESET);
+        assertGroup(root.at("/$.party/path_trace"), i -> i % 2 == 0);
+        assertGroup(root.at("/$.party.name/path_trace"), i -> i % 2 == 0);
+        assertGroup(root.at("/$.party[*]/path_trace"), i -> i % 2 == 1);
+        assertGroup(root.at("/$.party[*].id/path_trace"), i -> i % 2 == 1);
     }
 
     @Test

@@ -17,7 +17,7 @@ public final class CoreSettings {
     private CoreSettings() {} // Запрещаем инстанцирование
 
     /**
-     * Возвращает версию схемы rx-data (например, {@code "1.1"}).
+     * Возвращает версию схемы rx-data (например, {@code "3.0"}).
      *
      * @return версия схемы в формате major.minor
      */

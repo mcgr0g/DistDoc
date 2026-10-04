@@ -60,6 +60,9 @@ public class JsonSchemaAnalyzer {
     /** Действующие path hints numeric timestamp (секция {@code [format]} + env-override). */
     private static final List<String> FORMAT_HINTS = FormatSettings.getInstance().getPathHints();
 
+    /** Тип узла объекта (контракт rx-data 3.0, раздел 2b). */
+    static final String TYPE_OBJECT = "OBJECT";
+
     /** Ключи отчёта и внутреннего состояния (форма отчёта — docs/contracts/rx-data-contract.md). */
     static final String FIELD_SCHEMA_VERSION = "schema_version";
     static final String FIELD_TYPE = "type";
@@ -92,6 +95,9 @@ public class JsonSchemaAnalyzer {
 
     /** Стек путей для отслеживания вложенных или параллельных массивов. */
     private final Deque<String> arrayPathStack = new ArrayDeque<>();
+
+    /** Счётчик всех элементов текущего массива любого типа (единственный критерий пустоты, {@code is_array_empty}). */
+    private final Deque<int[]> arrayCountStack = new ArrayDeque<>();
 
     // ------------------------------------------------------------------
     // Состояние трассировки идентификаторов (per-row; сбрасывается в начале analyze)
@@ -149,7 +155,7 @@ public class JsonSchemaAnalyzer {
         try (JsonParser parser = FACTORY.createParser(input)) {
             Deque<String> rootPathStack = new ArrayDeque<>();
             rootPathStack.push("$");
-            parseTokens(parser, rootPathStack);
+            parseTokens(parser, rootPathStack, false);
         } catch (Exception e) {
             // Стабильность для DWH
         }
@@ -180,7 +186,7 @@ public class JsonSchemaAnalyzer {
         try (JsonParser parser = FACTORY.createParser(input)) {
             Deque<String> rootPathStack = new ArrayDeque<>();
             rootPathStack.push("$");
-            parseTokens(parser, rootPathStack);
+            parseTokens(parser, rootPathStack, false);
         } catch (Exception e) {
             // Стабильность для DWH
         }
@@ -328,11 +334,16 @@ public class JsonSchemaAnalyzer {
      * Внутренний циклический диспетчер токенов Jackson.
      * Управляет навигацией по документу и координирует рост/сокращение стека путей.
      *
-     * @param parser    активный экземпляр парсера Jackson
-     * @param pathStack изолированный стек путей текущего уровня вложенности (рекурсии)
+     * <p>Узлы объектов (контракт rx-data 3.0, раздел 2b): объект — значение ключа — регистрируется на своём пути
+     * с типом {@code OBJECT}; корень документа, объект-элемент массива и корень под-документа jsonstring узла не получают.</p>
+     *
+     * @param parser      активный экземпляр парсера Jackson
+     * @param pathStack   изолированный стек путей текущего уровня вложенности (рекурсии)
+     * @param subDocument {@code true} для содержимого jsonstring: первый контейнер — значение пути строки, а не объект на нём
      * @throws Exception при системных ошибках чтения потока
      */
-    private void parseTokens(JsonParser parser, Deque<String> pathStack) throws Exception {
+    private void parseTokens(JsonParser parser, Deque<String> pathStack, boolean subDocument) throws Exception {
+        int depth = 0;
         JsonToken token;
         while ((token = parser.nextToken()) != null) {
             String currentPath = buildJsonPath(pathStack);
@@ -343,12 +354,18 @@ public class JsonSchemaAnalyzer {
                     break;
 
                 case START_OBJECT:
+                    countArrayElement(pathStack);
                     if (isInsideArray(pathStack)) {
                         invalidateFlatArrayFlags();
+                    } else if (isKeyedValue(pathStack) && !(subDocument && depth == 0)) {
+                        getOrCreateMetrics(currentPath).addType(TYPE_OBJECT);
                     }
+                    depth++;
                     break;
 
                 case START_ARRAY:
+                    countArrayElement(pathStack);
+                    depth++;
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         String arrayField = pathStack.pop();
                         pathStack.push(arrayField + "[*]");
@@ -361,17 +378,20 @@ public class JsonSchemaAnalyzer {
 
                     arrayPathStack.push(fullArrayPath);
                     arrayElementsStack.push(new ArrayList<>());
+                    arrayCountStack.push(new int[1]);
                     arrayAllStringsStack.push(true);
                     arrayAllNumbersStack.push(true);
                     break;
 
                 case END_OBJECT:
+                    depth--;
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
                     }
                     break;
 
                 case END_ARRAY:
+                    depth--;
                     handleEndArray();
                     if (!pathStack.isEmpty() && pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
@@ -393,6 +413,7 @@ public class JsonSchemaAnalyzer {
                     break;
 
                 case VALUE_NUMBER_FLOAT:
+                    countArrayElement(pathStack);
                     getOrCreateMetrics(currentPath).addType("DOUBLE");
                     recordFormat(currentPath, FormatDetector.detectDouble(
                             parser.getDoubleValue(), FormatDetector.numericContext(currentPath, FORMAT_HINTS)));
@@ -404,6 +425,7 @@ public class JsonSchemaAnalyzer {
 
                 case VALUE_TRUE:
                 case VALUE_FALSE:
+                    countArrayElement(pathStack);
                     getOrCreateMetrics(currentPath).addType("BOOLEAN");
                     if (isInsideArray(pathStack)) invalidateFlatArrayFlags();
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
@@ -412,6 +434,7 @@ public class JsonSchemaAnalyzer {
                     break;
 
                 case VALUE_NULL:
+                    countArrayElement(pathStack);
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
                     }
@@ -426,15 +449,29 @@ public class JsonSchemaAnalyzer {
      */
     private void handleStringValue(JsonParser parser, String currentPath, Deque<String> pathStack) throws Exception {
         String text = parser.getText();
+        countArrayElement(pathStack);
 
         // Быстрая проверка маркеров начала и конца структуры JSON объекта/массива
         if (text != null && ((text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]")))) {
+            boolean expanded = false;
             try (JsonParser subParser = FACTORY.createParser(text)) {
                 Deque<String> subPathStack = new ArrayDeque<>(pathStack);
-                parseTokens(subParser, subPathStack);
-                return; // Успешно вышли из рекурсии под-документа, прерываем обработку обычной строки
+                parseTokens(subParser, subPathStack, true);
+                expanded = true;
             } catch (Exception e) {
                 // Ошибка парсинга означает ложную тревогу — строка обрабатывается ниже как обычный текст
+            }
+            if (expanded) {
+                // Успешно вышли из рекурсии под-документа: путь строки — VARCHAR + is_json_string (раздел 3 контракта);
+                // элемент массива — не плоский литерал
+                PathMetrics metrics = getOrCreateMetrics(currentPath);
+                metrics.addType("VARCHAR");
+                metrics.updateLength(text.length());
+                markAnomalyTraced(currentPath, PathMetrics.ANOMALY_JSON_STRING);
+                if (isInsideArray(pathStack)) {
+                    invalidateFlatArrayFlags();
+                }
+                return;
             }
         }
 
@@ -459,6 +496,7 @@ public class JsonSchemaAnalyzer {
      * Обработчик целочисленных значений. Фиксирует тип INTEGER и сбрасывает текстовые флаги массива.
      */
     private void handleIntValue(JsonParser parser, String currentPath, Deque<String> pathStack) throws Exception {
+        countArrayElement(pathStack);
         // Сбор trace-id из целочисленного скаляра (BSON-числовые id не типичны, но целые — валидный кандидат)
         collectTraceValue(currentPath, parser.getText());
 
@@ -488,6 +526,7 @@ public class JsonSchemaAnalyzer {
             List<String> elements = arrayElementsStack.pop();
             boolean allStrings = arrayAllStringsStack.pop();
             boolean allNumbers = arrayAllNumbersStack.pop();
+            int totalElements = arrayCountStack.pop()[0];
 
             PathMetrics metrics = getOrCreateMetrics(finishedArrayPath);
 
@@ -495,7 +534,7 @@ public class JsonSchemaAnalyzer {
             Set<String> before = isTraceActive() ? Set.copyOf(metrics.getAnomalies()) : null;
 
             // Декларативно делегируем анализ выделенной стратегии
-            ArrayContext context = new ArrayContext(finishedArrayPath, elements, allStrings, allNumbers);
+            ArrayContext context = new ArrayContext(finishedArrayPath, elements, totalElements, allStrings, allNumbers);
             anomalyDetector.detect(context, metrics);
 
             // Каждая новая аномалия получает свой trace scope; id-поле может идти в документе
@@ -507,6 +546,27 @@ public class JsonSchemaAnalyzer {
                     }
                 }
             }
+        }
+    }
+
+    /** Вершина стека — имя ключа (значение лежит по ключу объекта), а не корень {@code $} и не элемент массива. */
+    private boolean isKeyedValue(Deque<String> pathStack) {
+        return !pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]");
+    }
+
+    /** Учитывает значение, являющееся прямым элементом текущего массива (любого типа, включая объект и null). */
+    private void countArrayElement(Deque<String> pathStack) {
+        if (isInsideArray(pathStack) && !arrayCountStack.isEmpty()) {
+            arrayCountStack.peek()[0]++;
+        }
+    }
+
+    /**
+     * Фиксирует аномалию на пути; в trace-режиме новая для пути аномалия запоминается для раскладки id в конце строки.
+     */
+    private void markAnomalyTraced(String path, String name) {
+        if (getOrCreateMetrics(path).markAnomaly(name) && isTraceActive()) {
+            newAnomaliesThisRow.computeIfAbsent(path, k -> new TreeSet<>()).add(name);
         }
     }
 
@@ -600,7 +660,7 @@ public class JsonSchemaAnalyzer {
     }
 
     /**
-     * Декларативная сборка итогового rx-data (контракт 2.0) через Jackson ObjectNode.
+     * Декларативная сборка итогового rx-data (контракт 3.0) через Jackson ObjectNode.
      * Пути записываются в лексикографическом порядке; на пути — {@code type}, {@code max_length},
      * {@code observed_formats?}, {@code anomalies?} ({@code {detected, trace?}}), {@code path_trace?}.
      * Trace {@code is_polymorphic_format} собирается из trace форматов: элементы несут поле {@code format}.

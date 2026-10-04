@@ -18,6 +18,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Properties;
 import java.util.Map;
 import java.util.Set;
@@ -81,6 +82,33 @@ public class RxDataSchemaTest {
 
         Set<ValidationMessage> errors = validate(report);
         assertTrue(errors.isEmpty(), "rx-data trace-режима не соответствует контракту: " + errors);
+    }
+
+    @Test
+    public void testRxDataValidForStructureScenarios() throws Exception {
+        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
+        for (AnomalyScenario scenario : List.of(AnomalyScenario.OBJ_NESTED_PLAIN, AnomalyScenario.OBJ_ARRAY_OF_OBJECTS,
+                AnomalyScenario.OBJ_OBJECT_OR_ARRAY, AnomalyScenario.OBJ_OBJECT_OR_SCALAR,
+                AnomalyScenario.OBJ_OBJECT_OR_ARRAY_FORMATS)) {
+            JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+            for (int i = 0; i < 6; i++) {
+                String json = ChaosDataGenerator.generateSingleLine(source, scenario, i);
+                analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
+            }
+            String report = analyzer.buildJsonReport();
+            assertTrue(report.contains("\"type\":\"OBJECT\""), scenario + ": нет узлов OBJECT");
+            Set<ValidationMessage> errors = validate(report);
+            assertTrue(errors.isEmpty(), scenario + ": rx-data не соответствует контракту 3.0: " + errors);
+        }
+    }
+
+    @Test
+    public void testSchemaRejectsUnknownTypeAndOldMajor() throws Exception {
+        assertTrue(validate("{\"schema_version\":\"3.0\",\"$.x\":{\"type\":\"OBJECT\",\"max_length\":0}}").isEmpty());
+        assertFalse(validate("{\"schema_version\":\"3.0\",\"$.x\":{\"type\":\"MAP\",\"max_length\":0}}").isEmpty(),
+                "тип вне enum контракта");
+        assertFalse(validate("{\"schema_version\":\"2.0\",\"$.x\":{\"type\":\"VARCHAR\",\"max_length\":0}}").isEmpty(),
+                "major 2 схемой 3.0 не принимается");
     }
 
     @Test

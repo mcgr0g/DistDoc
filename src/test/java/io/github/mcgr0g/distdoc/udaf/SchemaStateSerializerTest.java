@@ -116,7 +116,7 @@ public class SchemaStateSerializerTest {
     @Test
     public void testUnknownFieldSkipsOnlyThatPath() {
         // Плоский флаг 1.x (воркер старой версии) — путь пропускается, соседние пути сохраняются
-        String state = "{\"schema_version\":\"2.0\","
+        String state = "{\"schema_version\":\"3.0\","
                 + "\"$.x\":{\"type\":\"INTEGER\",\"max_length\":0,\"is_array_empty\":true},"
                 + "\"$.y\":{\"type\":\"VARCHAR\",\"max_length\":3,\"observed_formats\":[\"DATE_ONLY\"]}}";
         JsonSchemaAnalyzer restored = JsonSchemaAnalyzer.fromStateJson(state);
@@ -145,6 +145,33 @@ public class SchemaStateSerializerTest {
         String report = analyzer.buildJsonReport();
         assertEquals(report, copy(analyzer).buildJsonReport(), "полиморфизм объектов переживает round-trip");
         assertEquals(Set.of("$.x", "$.x.a", "$.x[*]", "$.x[*].b", "$.x[*].c"), copy(analyzer).getSchemaMap().keySet());
+        assertEquals("VARCHAR", copy(analyzer).getSchemaMap().get("$.x").getFinalType(), "OBJECT + строка → VARCHAR");
+        assertEquals("ARRAY", copy(analyzer).getSchemaMap().get("$.x[*]").getFinalType());
+    }
+
+    @Test
+    public void testObjectNodesAndJsonStringSurviveRoundTrip() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        analyzer.analyze(new ByteArrayInputStream(
+                "{\"o\": {\"a\": 1}, \"m\": \"{\\\"u\\\": 1}\"}".getBytes(StandardCharsets.UTF_8)));
+        String report = analyzer.buildJsonReport();
+        assertEquals(report, copy(analyzer).buildJsonReport(), "узлы OBJECT и is_json_string переживают round-trip");
+        PathMetrics restored = copy(analyzer).getSchemaMap().get("$.m");
+        assertEquals(Set.of(PathMetrics.ANOMALY_JSON_STRING), restored.getAnomalies());
+        assertEquals("OBJECT", copy(analyzer).getSchemaMap().get("$.o").getFinalType());
+    }
+
+    @Test
+    public void testObjectVersusScalarMergeAcrossWorkers() {
+        // Воркер с объектом и воркер со строкой на одном пути: итог VARCHAR при любом порядке слияния
+        JsonSchemaAnalyzer objects = new JsonSchemaAnalyzer();
+        objects.analyze(new ByteArrayInputStream("{\"x\": {\"a\": 1}}".getBytes(StandardCharsets.UTF_8)));
+        JsonSchemaAnalyzer scalars = new JsonSchemaAnalyzer();
+        scalars.analyze(new ByteArrayInputStream("{\"x\": \"s\"}".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(merged(objects, scalars), merged(scalars, objects));
+        JsonSchemaAnalyzer acc = copy(objects);
+        acc.merge(copy(scalars));
+        assertEquals("VARCHAR", acc.getSchemaMap().get("$.x").getFinalType());
     }
 
     @Test

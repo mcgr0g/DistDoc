@@ -37,7 +37,7 @@
 | `$.created_at` | `VARCHAR` | `LOCAL_DATETIME` | — |
 | `$.updated_at` | `VARCHAR` | `OFFSET_DATETIME` | — |
 | `$.promo_expiry_date` | `VARCHAR` | `DATE_ONLY` | — |
-| `$.metadata_encoded` | `VARCHAR` (строка + развёрнутый объект → `VARCHAR`, не `OBJECT`) | — | — |
+| `$.metadata_encoded` | `VARCHAR`, `max_length` = длина исходной строки (43); узла `OBJECT` на этом пути нет | — | `is_json_string` |
 | `$.metadata_encoded.user_agent` | `VARCHAR` | — | — |
 | `$.metadata_encoded.retry_count` | `INTEGER` | — | — |
 | `$.version` | `OBJECT` | — | — |
@@ -82,8 +82,8 @@
 | Таблица | Группы по `index` | Вход (добавленное поле) | Ожидаемый report |
 |---|---|---|---|
 | `obj_nested_plain` | все строки одинаковы | `profile={"contacts":{"email":"…","phone":"…"},"flags":{}}` | `$.profile`, `$.profile.contacts`, `$.profile.flags`: `OBJECT`, `max_length=0`; `$.profile.contacts.email`/`.phone`: `VARCHAR`; у `$.profile.flags` нет потомков (пустой объект узел имеет); нет ни одного пути `[*]` у `profile` |
-| `obj_array_of_objects` | все строки одинаковы | `items=[{"sku":"…","qty":2,"dims":{"w":1,"h":2}}, …]` (2 элемента) | `$.items[*]`: `ARRAY`; `$.items[*].sku`: `VARCHAR`; `$.items[*].qty`, `$.items[*].dims.w`/`.h`: `INTEGER`; `$.items[*].dims`: `OBJECT` (объект внутри элемента узел имеет); **путь `$.items` отсутствует**, объекта-элемента как узла нет |
-| `obj_object_or_array` | `party`: `i%2==0` — объект `{"name":"…","role":"…"}`; `i%2==1` — массив `[{"id":"…","share":50},…]` (1–2 элемента) | как слева | полиморфное поле: объектная ветка — `$.party`: `OBJECT`, `$.party.name`/`.role`: `VARCHAR`; массивная — `$.party[*]`: `ARRAY`, `$.party[*].id`: `VARCHAR`, `$.party[*].share`: `INTEGER`. Ветки не пересекаются: нет `$.party.id`, `$.party.share`, `$.party[*].name`, `$.party[*].role`; нет `anomalies` у узлов; тип `$.party` не `VARCHAR` |
+| `obj_array_of_objects` | все строки одинаковы | `items=[{"sku":"…","qty":2,"dims":{"w":1,"h":2}}, …]` (2 элемента) | `$.items[*]`: `ARRAY`; `$.items[*].sku`: `VARCHAR`; `$.items[*].qty`, `$.items[*].dims.w`/`.h`: `INTEGER`; `$.items[*].dims`: `OBJECT` (объект внутри элемента узел имеет); **путь `$.items` отсутствует**, объекта-элемента как узла нет; `is_array_empty` на `$.items[*]` нет (массив объектов не пуст) |
+| `obj_object_or_array` | `party`: `i%2==0` — объект `{"name":"…","role":"…"}`; `i%2==1` — массив `[{"id":"…","share":50},…]` (1–2 элемента) | как слева | полиморфное поле: объектная ветка — `$.party`: `OBJECT`, `$.party.name`/`.role`: `VARCHAR`; массивная — `$.party[*]`: `ARRAY`, `$.party[*].id`: `VARCHAR`, `$.party[*].share`: `INTEGER`. Ветки не пересекаются: нет `$.party.id`, `$.party.share`, `$.party[*].name`, `$.party[*].role`; нет `anomalies` у узлов (в частности нет `is_array_empty` у `$.party[*]`); тип `$.party` не `VARCHAR` |
 | `obj_object_or_scalar` | `contact`: `i%2==0` — объект `{"email":"…"}`; `i%2==1` — строка `"n/a"` | как слева | `$.contact`: `type=VARCHAR`, `max_length=3` (смешение `OBJECT` со скаляром → `VARCHAR`; признак объектной ветки — путь `$.contact.email`: `VARCHAR`); пути `$.contact[*]` нет; отсутствие `OBJECT` в `type` — зафиксированный компромисс (ADR-0007) |
 | `obj_object_or_array_formats` | `party` как в `obj_object_or_array`, плюс `signed_at`: объектная ветка `2026-07-23T01:15:00`, массивная `2026-07-23` | как слева | `$.party.signed_at`: `LOCAL_DATETIME` (без `is_polymorphic_format`); `$.party[*].signed_at`: `DATE_ONLY` (без `is_polymorphic_format`); форматы и аномалии веток независимы: общий путь не образуется |
 
@@ -109,7 +109,7 @@
 
 | Таблица | Scope | Ожидание |
 |---|---|---|
-| любая | `path_trace` каждого пути | 1…`max_ids` пар; сортировка по `(id, id_key)`; маркер `{"id":"","id_key":""}` не более одного и только в хвосте |
+| любая | `path_trace` каждого пути (включая узлы `OBJECT`); `trace` каждой аномалии, в том числе `is_json_string` — той же формы | 1…`max_ids` пар; сортировка по `(id, id_key)`; маркер `{"id":"","id_key":""}` не более одного и только в хвосте |
 | `trace_mixed_sources` | все scopes | каждая пара согласована: префикс id задаёт ключ — `60b8…` ↔ `_id.$oid`, `id-…` ↔ `id`, `ord-…` ↔ `order_id`, `""` ↔ `""`. Ложная пара (id одного источника с ключом другого) — провал |
 | `trace_mixed_sources` | merge | E2E на распределённом кластере: обычный отчёт совпадает с одноузловым; в trace-отчёте все пары согласованы, `$.id`/`$.order_id`/`$._id.$oid` несут id только своего источника. Значения id не сравниваются: scope хранит первое появление факта на воркере, поэтому набор id зависит от разбиения на сплиты (алгебра merge — unit `SchemaStateSerializerTest`) |
 | `pol_created_at_with_arrays` | `anomalies.is_date_part_array.trace`, `anomalies.is_array_empty.trace` | id только из строк своей группы (`i%2==1` и `i%5==0` соответственно) |

@@ -16,7 +16,7 @@ import java.util.*;
  * типы данных (например, число {@code 42} и строка {@code "active"}), класс сохраняет
  * оба типа в структуре {@code Set}. При вызове {@link #getFinalType()} числовое
  * смешение {INTEGER, DOUBLE} сводится к {@code DOUBLE} (расширение без потери данных),
- * любое смешение с {@code VARCHAR}/{@code BOOLEAN}/{@code ARRAY} — к {@code VARCHAR}.</p>
+ * любое смешение с {@code VARCHAR}/{@code BOOLEAN}/{@code ARRAY}/{@code OBJECT} — к {@code VARCHAR}.</p>
  *
  * <p><b>Монотонность:</b> форматы и аномалии только накапливаются — операции сужения нет.
  * Аномалия {@link #ANOMALY_POLYMORPHIC_FORMAT} вычисляется при детекте разных форматов на одном
@@ -36,6 +36,12 @@ public class PathMetrics {
 
     /** Аномалия полиморфизма форматов: на пути доказано ≥ 2 написаний ({@link ValueFormat}). */
     public static final String ANOMALY_POLYMORPHIC_FORMAT = "is_polymorphic_format";
+
+    /**
+     * Аномалия jsonstring: на пути лежит строка с сериализованным JSON (объект или массив), разобранная рекурсивно.
+     * Ставится парсером ({@code JsonSchemaAnalyzer}), хранится как обычная аномалия (docs/contracts/rx-data-contract.md, раздел 3).
+     */
+    public static final String ANOMALY_JSON_STRING = "is_json_string";
 
     /** Набор всех уникальных типов данных, зафиксированных на данном пути. */
     private final Set<String> types = new TreeSet<>();
@@ -76,7 +82,8 @@ public class PathMetrics {
      *         строгое имя типа (например, {@code "INTEGER"}) — если тип однороден;<br>
      *         {@code "DOUBLE"} — если зафиксировано числовое смешение {INTEGER, DOUBLE}
      *         (расширение без потери данных);<br>
-     *         {@code "VARCHAR"} — при любом другом смешении типов (полиморфизм).
+     *         {@code "VARCHAR"} — при любом другом смешении типов (полиморфизм), в том числе
+     *         {@code "OBJECT"} со скаляром на одном пути.
      */
     public String getFinalType() {
         if (types.isEmpty()) return "UNKNOWN";

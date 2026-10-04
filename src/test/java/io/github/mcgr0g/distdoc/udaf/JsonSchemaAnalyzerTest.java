@@ -18,6 +18,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_JSON_STRING;
 import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_POLYMORPHIC_FORMAT;
 import static io.github.mcgr0g.distdoc.udaf.formats.ValueFormat.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -231,7 +232,9 @@ public class JsonSchemaAnalyzerTest {
         assertEquals(Set.of(UNIX_MILLIS), canonical.getFormats(), "canonical Extended JSON без hint");
         assertEquals(Set.of(UNIX_MILLIS), path(analyzer, "$.legacy.$date").getFormats());
         assertEquals(Set.of(UTC_DATETIME), path(analyzer, "$.relaxed.$date").getFormats());
-        assertFalse(analyzer.getSchemaMap().containsKey("$.doc"), "формат не поднимается к родителю");
+        assertEquals("OBJECT", path(analyzer, "$.doc").getFinalType(), "объект — значение ключа — получает узел");
+        assertTrue(path(analyzer, "$.doc").getFormats().isEmpty(), "формат не поднимается к родителю");
+        assertTrue(path(analyzer, "$.doc.$date").getFormats().isEmpty(), "формат не поднимается к промежуточному узлу");
     }
 
     @Test
@@ -264,7 +267,7 @@ public class JsonSchemaAnalyzerTest {
         feed(analyzer, AnomalyScenario.DATE_AS_PLAIN, 2, null);
         JsonNode root = MAPPER.readTree(analyzer.buildJsonReport());
 
-        assertEquals("2.0", root.get("schema_version").asText());
+        assertEquals("3.0", root.get("schema_version").asText());
 
         JsonNode createdAt = root.get("$.created_at");
         assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\"]", createdAt.get("observed_formats").toString());
@@ -294,6 +297,155 @@ public class JsonSchemaAnalyzerTest {
         List<String> sorted = new ArrayList<>(keys);
         sorted.sort(null);
         assertEquals(sorted, keys);
+    }
+
+    // ------------------------------------------------------------------ структура объектов (контракт rx-data 3.0, раздел 2b)
+
+    private static JsonSchemaAnalyzer analyzedJson(String... rows) {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        for (String row : rows) {
+            feed(analyzer, row, null);
+        }
+        return analyzer;
+    }
+
+    @Test
+    public void testObjectNodes() {
+        JsonSchemaAnalyzer analyzer = analyzedJson(
+                "{\"a\": {\"b\": {\"c\": 1}, \"e\": {}}, \"arr\": [{\"m\": {\"k\": 1}, \"s\": \"x\"}]}");
+        for (String node : List.of("$.a", "$.a.b", "$.a.e", "$.arr[*].m")) {
+            assertEquals("OBJECT", path(analyzer, node).getFinalType(), node);
+            assertEquals(0, path(analyzer, node).getMaxLength(), node);
+        }
+        assertEquals("INTEGER", path(analyzer, "$.a.b.c").getFinalType());
+        assertEquals("ARRAY", path(analyzer, "$.arr[*]").getFinalType());
+        assertEquals(Set.of("$.a", "$.a.b", "$.a.b.c", "$.a.e", "$.arr[*]", "$.arr[*].m", "$.arr[*].m.k", "$.arr[*].s"),
+                analyzer.getSchemaMap().keySet(), "нет узла у корня, у $.arr и у объекта-элемента массива");
+    }
+
+    @Test
+    public void testRootArrayOfObjectsHasNoObjectNode() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("[{\"a\": 1}, {\"a\": 2}]");
+        assertEquals(Set.of("$[*]", "$[*].a"), analyzer.getSchemaMap().keySet());
+        assertEquals("ARRAY", path(analyzer, "$[*]").getFinalType());
+    }
+
+    @Test
+    public void testObjectMixedWithScalarIsVarchar() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"x\": {\"a\": 1}}", "{\"x\": \"text\"}");
+        assertEquals("VARCHAR", path(analyzer, "$.x").getFinalType(), "OBJECT со скаляром → VARCHAR");
+        assertEquals(4, path(analyzer, "$.x").getMaxLength());
+        assertEquals("INTEGER", path(analyzer, "$.x.a").getFinalType(), "форма поддерева сохраняется в детях");
+    }
+
+    @Test
+    public void testObjectAndArrayOnSamePathAreSeparate() {
+        String asObject = "{\"p\": {\"name\": \"n\"}}";
+        String asArray = "{\"p\": [{\"id\": \"i\", \"share\": 50}]}";
+        JsonSchemaAnalyzer forward = analyzedJson(asObject, asArray);
+        JsonSchemaAnalyzer backward = analyzedJson(asArray, asObject);
+
+        assertEquals(Set.of("$.p", "$.p.name", "$.p[*]", "$.p[*].id", "$.p[*].share"), forward.getSchemaMap().keySet());
+        assertEquals("OBJECT", path(forward, "$.p").getFinalType(), "объект не сливается в VARCHAR");
+        assertEquals("ARRAY", path(forward, "$.p[*]").getFinalType());
+        assertTrue(path(forward, "$.p[*]").getAnomalies().isEmpty(), "массив объектов не пуст");
+        assertEquals(forward.buildJsonReport(), backward.buildJsonReport(), "порядок строк не влияет на отчёт");
+    }
+
+    @Test
+    public void testObjectNodeMergeIsCommutative() {
+        JsonSchemaAnalyzer asObject = analyzedJson("{\"x\": {\"a\": 1}}");
+        JsonSchemaAnalyzer asScalar = analyzedJson("{\"x\": \"s\"}");
+        JsonSchemaAnalyzer ab = analyzedJson("{\"x\": {\"a\": 1}}");
+        ab.merge(asScalar);
+        JsonSchemaAnalyzer ba = analyzedJson("{\"x\": \"s\"}");
+        ba.merge(asObject);
+        assertEquals("VARCHAR", path(ab, "$.x").getFinalType());
+        assertEquals(ab.buildJsonReport(), ba.buildJsonReport());
+    }
+
+    // ------------------------------------------------------------------ jsonstring
+
+    @Test
+    public void testJsonStringObject() {
+        String inner = "{\"u\": \"a\", \"n\": 1}";
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": " + quote(inner) + "}");
+        PathMetrics m = path(analyzer, "$.m");
+        assertEquals("VARCHAR", m.getFinalType());
+        assertEquals(inner.length(), m.getMaxLength(), "длина исходной строки");
+        assertEquals(Set.of(ANOMALY_JSON_STRING), m.getAnomalies());
+        assertEquals("VARCHAR", path(analyzer, "$.m.u").getFinalType());
+        assertEquals("INTEGER", path(analyzer, "$.m.n").getFinalType());
+    }
+
+    @Test
+    public void testJsonStringArray() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": " + quote("[{\"k\": 1}, {\"k\": 2}]") + "}");
+        assertEquals(Set.of(ANOMALY_JSON_STRING), path(analyzer, "$.m").getAnomalies());
+        assertEquals("ARRAY", path(analyzer, "$.m[*]").getFinalType());
+        assertTrue(path(analyzer, "$.m[*]").getAnomalies().isEmpty(), "массив объектов не пуст");
+        assertEquals("INTEGER", path(analyzer, "$.m[*].k").getFinalType());
+    }
+
+    @Test
+    public void testBracedTextIsNotJsonString() {
+        // Строки, начинающиеся с «[», оставляют путь массива до ошибки разбора (известное поведение, вне объёма раунда)
+        for (String text : List.of("{abc}", "{\"a\":}")) {
+            JsonSchemaAnalyzer analyzer = analyzedJson("{\"t\": " + quote(text) + "}");
+            assertEquals(Set.of("$.t"), analyzer.getSchemaMap().keySet(), "ложная тревога не оставляет путей: " + text);
+            assertTrue(path(analyzer, "$.t").getAnomalies().isEmpty(), text);
+            assertEquals(text.length(), path(analyzer, "$.t").getMaxLength(), text);
+        }
+    }
+
+    @Test
+    public void testJsonStringInsideArray() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"l\": [" + quote("{\"a\": 1}") + "]}");
+        PathMetrics l = path(analyzer, "$.l[*]");
+        assertTrue(l.getAnomalies().contains(ANOMALY_JSON_STRING));
+        assertFalse(l.getAnomalies().contains(AnomalyDetector.METRIC_IS_EMPTY), "элемент есть");
+        assertFalse(l.getAnomalies().contains(AnomalyDetector.METRIC_IS_STRING_ARRAY), "строка с JSON — не плоский литерал");
+        assertEquals("INTEGER", path(analyzer, "$.l[*].a").getFinalType());
+    }
+
+    private static String quote(String text) {
+        try {
+            return MAPPER.writeValueAsString(text);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    // ------------------------------------------------------------------ пустота массива
+
+    @Test
+    public void testOnlyArrayWithoutElementsIsEmpty() {
+        JsonSchemaAnalyzer analyzer = analyzedJson(
+                "{\"o\": [{\"a\": 1}], \"f\": [1.5], \"b\": [true], \"n\": [null], \"e\": []}");
+        for (String notEmpty : List.of("$.o[*]", "$.f[*]", "$.b[*]", "$.n[*]")) {
+            assertFalse(path(analyzer, notEmpty).hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY), notEmpty + " не пуст");
+        }
+        assertTrue(path(analyzer, "$.e[*]").hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY));
+        assertTrue(path(analyzer, "$.n[*]").getAnomalies().isEmpty(), "[null] — не плоский строковый массив");
+    }
+
+    @Test
+    public void testEmptyAndNonEmptyArraysOnSamePath() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"o\": []}", "{\"o\": [{\"a\": 1}]}");
+        assertTrue(path(analyzer, "$.o[*]").hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY),
+                "встреченный пустой массив фиксируется монотонно");
+    }
+
+    // ------------------------------------------------------------------ trace структурных узлов
+
+    @Test
+    public void testObjectNodesAndJsonStringHaveTrace() {
+        String row = "{\"_id\": {\"$oid\": \"" + oid(1) + "\"}, \"a\": {\"b\": 1}, \"m\": " + quote("{\"u\": 1}") + "}";
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, row, PRESET);
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid")), pathTrace(analyzer, "$.a"), "узел OBJECT — обычный путь");
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid")), pathTrace(analyzer, "$._id"));
+        assertEquals(List.of(new Pair(oid(1), "_id.$oid")), anomalyTrace(analyzer, "$.m", ANOMALY_JSON_STRING));
     }
 
     // ------------------------------------------------------------------ trace: источник id
