@@ -18,6 +18,17 @@ public enum AnomalyScenario {
     POL_CREATED_AT_FORMATS,     // Комбинация: три написания created_at по i%3
     POL_CREATED_AT_WITH_ARRAYS, // Комбинация: написания created_at + аномалии массивов
     POL_CREATED_AT_WITH_RATING, // Комбинация: написания created_at + подъём customer_rating
+    OBJ_NESTED_PLAIN,           // Структура: вложенные объекты profile и пустой {}
+    OBJ_ARRAY_OF_OBJECTS,       // Структура: массив объектов items (с вложенным объектом dims)
+    OBJ_OBJECT_OR_ARRAY,        // Структура: party — объект (i%2==0) или массив объектов (i%2==1)
+    OBJ_OBJECT_OR_SCALAR,       // Структура: contact — объект (i%2==0) или строка "n/a"
+    OBJ_OBJECT_OR_ARRAY_FORMATS, // Структура × формат: party как выше + signed_at разного написания по ветке
+    OBJ_JSON_OBJECT_OR_ARRAY,   // JSON-строка: meta — объект (i%2==0) или массив (i%2==1) внутри строки
+    OBJ_JSON_ARRAY_ELEMENTS,    // JSON-строки как элементы массива list
+    OBJ_JSON_WITH_PLAIN,        // meta — JSON-строка (i%2==0) или обычная строка "" / "n/a"
+    OBJ_JSON_WITH_NATIVE_OBJECT, // meta — нативный объект (i%2==0) или JSON-строка с тем же объектом
+    OBJ_JSON_FALSE_ALARM,       // t — текст, лишь похожий на JSON: [TEST] / {abc}
+    OBJ_BSON_ID_FORMS,          // _id — BSON-обёртка {"$oid":…} (i%2==0) или строка (i%2==1)
     TRACE_MIXED_SOURCES,        // Trace: id-источник по i%4 (_id.$oid / id / order_id / нет)
     ALL                // Интеграционный crm_combined: все группы вместе, по index
 }

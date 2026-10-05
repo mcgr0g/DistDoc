@@ -16,7 +16,7 @@ import java.util.*;
  * типы данных (например, число {@code 42} и строка {@code "active"}), класс сохраняет
  * оба типа в структуре {@code Set}. При вызове {@link #getFinalType()} числовое
  * смешение {INTEGER, DOUBLE} сводится к {@code DOUBLE} (расширение без потери данных),
- * любое смешение с {@code VARCHAR}/{@code BOOLEAN}/{@code ARRAY} — к {@code VARCHAR}.</p>
+ * любое смешение с {@code VARCHAR}/{@code BOOLEAN}/{@code ARRAY}/{@code OBJECT} — к {@code VARCHAR}.</p>
  *
  * <p><b>Монотонность:</b> форматы и аномалии только накапливаются — операции сужения нет.
  * Аномалия {@link #ANOMALY_POLYMORPHIC_FORMAT} вычисляется при детекте разных форматов на одном
@@ -37,7 +37,38 @@ public class PathMetrics {
     /** Аномалия полиморфизма форматов: на пути доказано ≥ 2 написаний ({@link ValueFormat}). */
     public static final String ANOMALY_POLYMORPHIC_FORMAT = "is_polymorphic_format";
 
-    /** Набор всех уникальных типов данных, зафиксированных на данном пути. */
+    /**
+     * Вычисляемая аномалия: на пути лежит строка с сериализованным JSON (объект или массив), разобранная рекурсивно
+     * ({@link #TYPE_JSON_STRING} в наборе типов). Не хранится, вычисляется при сборке отчёта (раздел 3 контракта).
+     */
+    public static final String ANOMALY_JSON_STRING = "is_json_string";
+
+    /** Вычисляемая аномалия: рядом с JSON-строками на пути есть обычные строки (разбор содержимого небезопасен). */
+    public static final String ANOMALY_NON_JSON_STRINGS = "has_non_json_strings";
+
+    /** Вычисляемая аномалия: на пути сосуществуют ≥ 2 форм (скаляр / объект / объект-в-строке / массив), раздел 2b контракта. */
+    public static final String ANOMALY_POLYMORPHIC_STRUCTURE = "is_polymorphic_structure";
+
+    /** Нативный объект на пути (не BSON-обёртка). В отчёт попадает типом только у неоднородного поля. */
+    public static final String TYPE_OBJECT = "OBJECT";
+    /** Внутренний тип: на пути строка с валидным JSON-контейнером (в отчёте — {@code VARCHAR}). */
+    public static final String TYPE_JSON_STRING = "JSON_STRING";
+    /** Внутренний тип: содержимое JSON-строки на пути — объект (в отчёте — {@code VARCHAR}). */
+    public static final String TYPE_JSON_OBJECT = "JSON_OBJECT";
+    public static final String TYPE_VARCHAR = "VARCHAR";
+    public static final String TYPE_ARRAY = "ARRAY";
+
+    /** Скалярные типы (форма {@code SCALAR}). */
+    public static final Set<String> SCALAR_TYPES = Set.of("VARCHAR", "INTEGER", "DOUBLE", "BOOLEAN");
+
+    /** Все имена, допустимые в наборе типов (whitelist состояния между воркерами). */
+    public static final Set<String> KNOWN_TYPES =
+            Set.of("VARCHAR", "INTEGER", "DOUBLE", "BOOLEAN", "ARRAY", "OBJECT", "JSON_STRING", "JSON_OBJECT");
+
+    /**
+     * Набор всех уникальных типов данных, зафиксированных на данном пути. Передаётся между воркерами целиком
+     * (а не свёрнутым {@link #getFinalType()}): форма, увиденная одним воркером, не теряется при слиянии.
+     */
     private final Set<String> types = new TreeSet<>();
 
     /** Максимальная длина строкового представления значения в байтах/символах. */
@@ -52,6 +83,9 @@ public class PathMetrics {
     /** Документы, в которых путь встретился впервые (trace-режим); {@code null} — trace не собирался. */
     private TraceEvidence pathTrace = null;
 
+    /** Документы, впервые давшие конкретный тип на пути (trace-режим); источник trace производных аномалий. */
+    private final TreeMap<String, TraceEvidence> typeTrace = new TreeMap<>();
+
     /** Документы, на которых впервые зафиксирована конкретная аномалия (trace-режим). */
     private final TreeMap<String, TraceEvidence> anomalyTrace = new TreeMap<>();
 
@@ -61,12 +95,21 @@ public class PathMetrics {
     /**
      * Регистрирует тип данных, встреченный на текущем пути.
      *
-     * @param type наименование типа в формате SQL (например, {@code "VARCHAR"}, {@code "INTEGER"})
+     * @param type наименование типа (например, {@code "VARCHAR"}, {@code "INTEGER"}, внутренний {@code "JSON_STRING"})
+     * @return {@code true}, если тип на пути новый
      */
-    public void addType(String type) {
-        if (type != null) {
-            this.types.add(type);
-        }
+    public boolean addType(String type) {
+        return type != null && this.types.add(type);
+    }
+
+    /** @return неизменяемый вид набора типов пути (включая внутренние) */
+    public Set<String> getTypes() {
+        return Collections.unmodifiableSet(types);
+    }
+
+    /** @return {@code true}, если на пути встретилось скалярное значение (форма {@code SCALAR}) */
+    public boolean hasScalar() {
+        return types.stream().anyMatch(SCALAR_TYPES::contains);
     }
 
     /**
@@ -76,12 +119,18 @@ public class PathMetrics {
      *         строгое имя типа (например, {@code "INTEGER"}) — если тип однороден;<br>
      *         {@code "DOUBLE"} — если зафиксировано числовое смешение {INTEGER, DOUBLE}
      *         (расширение без потери данных);<br>
-     *         {@code "VARCHAR"} — при любом другом смешении типов (полиморфизм).
+     *         {@code "VARCHAR"} — при любом другом смешении типов (полиморфизм), в том числе
+     *         {@code "OBJECT"} со скаляром на одном пути.
      */
     public String getFinalType() {
         if (types.isEmpty()) return "UNKNOWN";
-        if (types.size() == 1) return types.iterator().next();
-        boolean allNumeric = types.stream().allMatch(t -> "INTEGER".equals(t) || "DOUBLE".equals(t));
+        // Внутренние типы JSON-строки в отчёте — физический VARCHAR
+        Set<String> reported = new TreeSet<>();
+        for (String t : types) {
+            reported.add(TYPE_JSON_STRING.equals(t) || TYPE_JSON_OBJECT.equals(t) ? TYPE_VARCHAR : t);
+        }
+        if (reported.size() == 1) return reported.iterator().next();
+        boolean allNumeric = reported.stream().allMatch(t -> "INTEGER".equals(t) || "DOUBLE".equals(t));
         return allNumeric ? "DOUBLE" : "VARCHAR";
     }
 
@@ -143,14 +192,27 @@ public class PathMetrics {
      * @return {@code true}, если аномалия зафиксирована
      */
     public boolean hasAnomaly(String name) {
-        if (ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
-            return isPolymorphicFormat();
-        }
-        return anomalies.contains(name);
+        return switch (name) {
+            case ANOMALY_POLYMORPHIC_FORMAT -> isPolymorphicFormat();
+            case ANOMALY_JSON_STRING -> isJsonString();
+            case ANOMALY_NON_JSON_STRINGS -> hasNonJsonStrings();
+            default -> anomalies.contains(name);
+        };
+    }
+
+    /** @return {@code true}, если на пути встретилась строка с валидным JSON-контейнером */
+    public boolean isJsonString() {
+        return types.contains(TYPE_JSON_STRING);
+    }
+
+    /** @return {@code true}, если рядом с JSON-строками на пути есть обычные строки */
+    public boolean hasNonJsonStrings() {
+        return types.contains(TYPE_JSON_STRING) && types.contains(TYPE_VARCHAR);
     }
 
     /**
-     * Хранимые аномалии пути (без вычисляемой {@link #ANOMALY_POLYMORPHIC_FORMAT}), отсортированы по имени.
+     * Хранимые аномалии пути (без вычисляемых: {@link #ANOMALY_POLYMORPHIC_FORMAT}, {@link #ANOMALY_JSON_STRING},
+     * {@link #ANOMALY_NON_JSON_STRINGS}, {@link #ANOMALY_POLYMORPHIC_STRUCTURE}), отсортированы по имени.
      *
      * @return неизменяемый вид множества имён
      */
@@ -198,6 +260,22 @@ public class PathMetrics {
         formatTrace.computeIfAbsent(format, k -> new TraceEvidence()).add(id, idKey);
     }
 
+    /**
+     * Добавляет пару строки-источника в trace конкретного типа пути.
+     *
+     * @param type  имя типа из набора {@link #getTypes()}
+     * @param id    идентификатор строки-источника
+     * @param idKey имя поля-источника
+     */
+    public void addTypeTrace(String type, String id, String idKey) {
+        typeTrace.computeIfAbsent(type, k -> new TraceEvidence()).add(id, idKey);
+    }
+
+    /** @return trace по типам (тип → evidence), отсортирован по имени типа */
+    public Map<String, TraceEvidence> getTypeTrace() {
+        return Collections.unmodifiableMap(typeTrace);
+    }
+
     /** @return trace появления пути или {@code null}, если trace не собирался */
     public TraceEvidence getPathTrace() {
         return pathTrace;
@@ -237,5 +315,7 @@ public class PathMetrics {
                 this.anomalyTrace.computeIfAbsent(name, k -> new TraceEvidence()).merge(evidence));
         other.formatTrace.forEach((format, evidence) ->
                 this.formatTrace.computeIfAbsent(format, k -> new TraceEvidence()).merge(evidence));
+        other.typeTrace.forEach((type, evidence) ->
+                this.typeTrace.computeIfAbsent(type, k -> new TraceEvidence()).merge(evidence));
     }
 }

@@ -116,9 +116,9 @@ public class SchemaStateSerializerTest {
     @Test
     public void testUnknownFieldSkipsOnlyThatPath() {
         // Плоский флаг 1.x (воркер старой версии) — путь пропускается, соседние пути сохраняются
-        String state = "{\"schema_version\":\"2.0\","
-                + "\"$.x\":{\"type\":\"INTEGER\",\"max_length\":0,\"is_array_empty\":true},"
-                + "\"$.y\":{\"type\":\"VARCHAR\",\"max_length\":3,\"observed_formats\":[\"DATE_ONLY\"]}}";
+        String state = "{\"schema_version\":\"3.0\","
+                + "\"$.x\":{\"types\":[\"INTEGER\"],\"max_length\":0,\"is_array_empty\":true},"
+                + "\"$.y\":{\"types\":[\"VARCHAR\"],\"max_length\":3,\"observed_formats\":[\"DATE_ONLY\"]}}";
         JsonSchemaAnalyzer restored = JsonSchemaAnalyzer.fromStateJson(state);
         assertFalse(restored.getSchemaMap().containsKey("$.x"), "путь с полем вне whitelist пропущен");
         PathMetrics y = restored.getSchemaMap().get("$.y");
@@ -129,8 +129,8 @@ public class SchemaStateSerializerTest {
 
     @Test
     public void testUnknownFormatSkipsOnlyThatPath() {
-        String state = "{\"$.x\":{\"type\":\"VARCHAR\",\"max_length\":1,\"observed_formats\":[\"ISO8601\"]},"
-                + "\"$.y\":{\"type\":\"INTEGER\",\"max_length\":0}}";
+        String state = "{\"$.x\":{\"types\":[\"VARCHAR\"],\"max_length\":1,\"observed_formats\":[\"ISO8601\"]},"
+                + "\"$.y\":{\"types\":[\"INTEGER\"],\"max_length\":0}}";
         JsonSchemaAnalyzer restored = JsonSchemaAnalyzer.fromStateJson(state);
         assertEquals(Set.of("$.y"), restored.getSchemaMap().keySet());
     }
@@ -145,6 +145,79 @@ public class SchemaStateSerializerTest {
         String report = analyzer.buildJsonReport();
         assertEquals(report, copy(analyzer).buildJsonReport(), "полиморфизм объектов переживает round-trip");
         assertEquals(Set.of("$.x", "$.x.a", "$.x[*]", "$.x[*].b", "$.x[*].c"), copy(analyzer).getSchemaMap().keySet());
+        assertEquals("VARCHAR", copy(analyzer).getSchemaMap().get("$.x").getFinalType(), "OBJECT + строка → VARCHAR");
+        assertEquals("ARRAY", copy(analyzer).getSchemaMap().get("$.x[*]").getFinalType());
+    }
+
+    @Test
+    public void testUnknownTypeSkipsOnlyThatPath() {
+        // Старое поле type (воркер другой версии) и неизвестное имя типа — путь пропускается, соседний сохраняется
+        String state = "{\"$.x\":{\"type\":\"VARCHAR\",\"max_length\":1},"
+                + "\"$.w\":{\"types\":[\"WEIRD\"],\"max_length\":0},"
+                + "\"$.y\":{\"types\":[\"INTEGER\"],\"max_length\":0}}";
+        assertEquals(Set.of("$.y"), JsonSchemaAnalyzer.fromStateJson(state).getSchemaMap().keySet());
+    }
+
+    @Test
+    public void testStateCarriesTypeSetNotCollapsedType() {
+        JsonSchemaAnalyzer analyzer = analyzed("{\"o\": {\"a\": 1}}", "{\"o\": \"s\"}");
+        String state = analyzer.buildStateJson();
+        assertTrue(state.contains("\"types\":[\"OBJECT\",\"VARCHAR\"]"), "состояние несёт набор типов: " + state);
+        assertEquals(Set.of("OBJECT", "VARCHAR"), copy(analyzer).getSchemaMap().get("$.o").getTypes());
+    }
+
+    @Test
+    public void testJsonStringAndObjectSurviveRoundTrip() {
+        JsonSchemaAnalyzer analyzer = analyzed("{\"o\": {\"a\": 1}, \"m\": \"{\\\"u\\\": 1}\"}");
+        assertEquals(analyzer.buildJsonReport(), copy(analyzer).buildJsonReport(), "формы и is_json_string переживают round-trip");
+        assertEquals(Set.of(PathMetrics.TYPE_JSON_STRING, PathMetrics.TYPE_JSON_OBJECT),
+                copy(analyzer).getSchemaMap().get("$.m").getTypes());
+        assertTrue(copy(analyzer).getSchemaMap().get("$.m").isJsonString());
+    }
+
+    @Test
+    public void testFormSeenByOneWorkerIsNotLostOnMerge() {
+        // Регрессия: воркер, видевший и объект, и скаляр, не должен терять форму «объект» при слиянии
+        // с воркером, видевшим массив (раньше состояние передавало только свёрнутый VARCHAR)
+        JsonSchemaAnalyzer both = analyzed("{\"x\": {\"a\": 1}}", "{\"x\": \"s\"}");
+        JsonSchemaAnalyzer arrays = analyzed("{\"x\": [1]}");
+        for (String report : List.of(merged(both, arrays), merged(arrays, both))) {
+            assertTrue(report.contains("\"is_polymorphic_structure\""), "неоднородность потеряна: " + report);
+        }
+        assertEquals(merged(both, arrays), merged(arrays, both), "слияние производных аномалий коммутативно");
+        JsonSchemaAnalyzer acc = copy(both);
+        acc.merge(copy(arrays));
+        assertEquals(Set.of("ARRAY", "OBJECT", "SCALAR"), acc.structureForms("$.x"));
+    }
+
+    @Test
+    public void testPlainStringOnOtherWorkerGivesNonJsonStringsAfterMerge() {
+        JsonSchemaAnalyzer json = analyzed("{\"m\": \"{\\\"u\\\": 1}\"}");
+        JsonSchemaAnalyzer plain = analyzed("{\"m\": \"n/a\"}");
+        String report = merged(json, plain);
+        assertTrue(report.contains("\"has_non_json_strings\""), report);
+        assertEquals(report, merged(plain, json));
+        assertFalse(merged(json, json).contains("has_non_json_strings"), "без обычных строк аномалии нет");
+    }
+
+    @Test
+    public void testStructureTraceSurvivesRoundTrip() {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        for (String row : List.of("{\"_id\": {\"$oid\": \"a1\"}, \"p\": {\"k\": 1}}",
+                "{\"_id\": {\"$oid\": \"a2\"}, \"p\": [{\"k\": 1}]}")) {
+            analyzer.analyze(new ByteArrayInputStream(row.getBytes(StandardCharsets.UTF_8)), Slices.utf8Slice(""));
+        }
+        String report = analyzer.buildJsonReport();
+        assertTrue(report.contains("\"form\":\"OBJECT\"") && report.contains("\"form\":\"ARRAY\""), report);
+        assertEquals(report, copy(analyzer).buildJsonReport(), "type_trace переживает round-trip");
+    }
+
+    private static JsonSchemaAnalyzer analyzed(String... rows) {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        for (String row : rows) {
+            analyzer.analyze(new ByteArrayInputStream(row.getBytes(StandardCharsets.UTF_8)));
+        }
+        return analyzer;
     }
 
     @Test

@@ -15,6 +15,9 @@ public class ForgottenMigrationsSource implements ChaosSource {
     // Написания created_at (docs/contracts/value-formats.md); базовая запись — LOCAL_DATETIME
     private static final String CREATED_AT_DATE_ONLY = "2026-07-23";
     private static final String CREATED_AT_OFFSET = "2026-07-23T01:15:00+03:00";
+    // JSON-строки (obj_json_*): экранированный JSON внутри строкового значения
+    private static final String JSON_OBJECT_TEXT = "{\"u\":\"a\"}";
+    private static final String JSON_ARRAY_TEXT = "[{\"k\":1}]";
     private static final long CREATED_AT_UNIX_MILLIS = 1784769300000L; // 2026-07-23T01:15:00Z
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -88,6 +91,28 @@ public class ForgottenMigrationsSource implements ChaosSource {
                 if (index % 2 == 1) doubleRating(baseRecord);
             }
             case TRACE_MIXED_SOURCES -> mixedIdSource(baseRecord, index);
+            case OBJ_JSON_OBJECT_OR_ARRAY -> baseRecord.put("meta", index % 2 == 0 ? JSON_OBJECT_TEXT : JSON_ARRAY_TEXT);
+            case OBJ_JSON_ARRAY_ELEMENTS -> baseRecord.putArray("list").add("{\"a\":1}").add("{\"a\":2}");
+            case OBJ_JSON_WITH_PLAIN -> baseRecord.put("meta", jsonOrPlain(index));
+            case OBJ_JSON_WITH_NATIVE_OBJECT -> {
+                if (index % 2 == 0) {
+                    baseRecord.putObject("meta").put("u", "a");
+                } else {
+                    baseRecord.put("meta", JSON_OBJECT_TEXT);
+                }
+            }
+            case OBJ_JSON_FALSE_ALARM -> baseRecord.put("t", index % 2 == 0 ? "[TEST]" : "{abc}");
+            case OBJ_BSON_ID_FORMS -> {
+                if (index % 2 == 1) {
+                    // Та же идентичность, но строкой: рядом с обёрткой {"$oid":…} в других строках
+                    baseRecord.put("_id", baseRecord.get("_id").get("$oid").asText());
+                }
+            }
+            case OBJ_NESTED_PLAIN -> nestedProfile(baseRecord);
+            case OBJ_ARRAY_OF_OBJECTS -> itemsOfObjects(baseRecord);
+            case OBJ_OBJECT_OR_ARRAY -> party(baseRecord, index, false);
+            case OBJ_OBJECT_OR_SCALAR -> contact(baseRecord, index);
+            case OBJ_OBJECT_OR_ARRAY_FORMATS -> party(baseRecord, index, true);
             case ALL -> {
                 // created_at: 0 local (базовая запись), 1 date-only, 2 unix millis, 3 offset
                 switch ((int) (index % 4)) {
@@ -103,6 +128,7 @@ public class ForgottenMigrationsSource implements ChaosSource {
                     // Поле 1 уровня в половине строк — для явной трассировки trace('surrogate_pk')
                     baseRecord.put("surrogate_pk", String.format("sp-%010d", index));
                 }
+                counterparties(baseRecord, index);
             }
             case CLEAN -> { } // Эталонный валидный документ без мутаций
         }
@@ -133,6 +159,74 @@ public class ForgottenMigrationsSource implements ChaosSource {
             record.put("id", String.format("id-%010d", index));
         } else if (group == 2) {
             record.put("order_id", String.format("ord-%010d", index));
+        }
+    }
+
+    /** meta по i%4: чётные — JSON-строка, 1 — пустая строка, 3 — обычный текст. */
+    private static String jsonOrPlain(long index) {
+        if (index % 2 == 0) return JSON_OBJECT_TEXT;
+        return index % 4 == 1 ? "" : "n/a";
+    }
+
+    /** profile: объекты двух уровней и пустой объект (узлы OBJECT без потомков). */
+    private void nestedProfile(ObjectNode record) {
+        ObjectNode profile = record.putObject("profile");
+        ObjectNode contacts = profile.putObject("contacts");
+        contacts.put("email", "ops@example.org");
+        contacts.put("phone", "+7-000-000-00-00");
+        profile.putObject("flags");
+    }
+
+    /** items: массив объектов; элемент содержит вложенный объект dims (у самого элемента узла OBJECT нет). */
+    private void itemsOfObjects(ObjectNode record) {
+        ArrayNode items = record.putArray("items");
+        for (int n = 1; n <= 2; n++) {
+            ObjectNode item = items.addObject();
+            item.put("sku", "sku-" + n);
+            item.put("qty", n + 1);
+            item.putObject("dims").put("w", n).put("h", n + 1);
+        }
+    }
+
+    /**
+     * party по i%2: чётные — объект {name, role}, нечётные — массив объектов [{id, share}] из 1–2 элементов.
+     * {@code withSignedAt}: signed_at другого написания в каждой ветке (LOCAL_DATETIME у объекта, DATE_ONLY у элементов).
+     */
+    private void party(ObjectNode record, long index, boolean withSignedAt) {
+        if (index % 2 == 0) {
+            ObjectNode party = record.putObject("party");
+            party.put("name", "Acme");
+            party.put("role", "buyer");
+            if (withSignedAt) party.put("signed_at", "2026-07-23T01:15:00");
+        } else {
+            ArrayNode party = record.putArray("party");
+            int size = 1 + (int) ((index / 2) % 2);
+            for (int n = 1; n <= size; n++) {
+                ObjectNode element = party.addObject();
+                element.put("id", "p-" + n);
+                element.put("share", 50);
+                if (withSignedAt) element.put("signed_at", CREATED_AT_DATE_ONLY);
+            }
+        }
+    }
+
+    /** contact по i%2: чётные — объект {email}, нечётные — строка "n/a" (смешение объекта со скаляром). */
+    private static void contact(ObjectNode record, long index) {
+        if (index % 2 == 0) {
+            record.putObject("contact").put("email", "ops@example.org");
+        } else {
+            record.put("contact", "n/a");
+        }
+    }
+
+    /** counterparties (режим all) по i%3: 0 — массив объектов [{share}], иначе объект {name}. */
+    private void counterparties(ObjectNode record, long index) {
+        if (index % 3 == 0) {
+            ArrayNode list = record.putArray("counterparties");
+            list.addObject().put("share", 100);
+            list.addObject().put("share", 50);
+        } else {
+            record.putObject("counterparties").put("name", "Acme");
         }
     }
 

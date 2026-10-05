@@ -18,6 +18,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_JSON_STRING;
 import static io.github.mcgr0g.distdoc.udaf.PathMetrics.ANOMALY_POLYMORPHIC_FORMAT;
 import static io.github.mcgr0g.distdoc.udaf.formats.ValueFormat.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -232,6 +234,7 @@ public class JsonSchemaAnalyzerTest {
         assertEquals(Set.of(UNIX_MILLIS), path(analyzer, "$.legacy.$date").getFormats());
         assertEquals(Set.of(UTC_DATETIME), path(analyzer, "$.relaxed.$date").getFormats());
         assertFalse(analyzer.getSchemaMap().containsKey("$.doc"), "формат не поднимается к родителю");
+        assertFalse(analyzer.getSchemaMap().containsKey("$.doc.$date"), "BSON-обёртка не оставляет промежуточных путей");
     }
 
     @Test
@@ -264,7 +267,7 @@ public class JsonSchemaAnalyzerTest {
         feed(analyzer, AnomalyScenario.DATE_AS_PLAIN, 2, null);
         JsonNode root = MAPPER.readTree(analyzer.buildJsonReport());
 
-        assertEquals("2.0", root.get("schema_version").asText());
+        assertEquals("3.0", root.get("schema_version").asText());
 
         JsonNode createdAt = root.get("$.created_at");
         assertEquals("[\"DATE_ONLY\",\"LOCAL_DATETIME\"]", createdAt.get("observed_formats").toString());
@@ -294,6 +297,280 @@ public class JsonSchemaAnalyzerTest {
         List<String> sorted = new ArrayList<>(keys);
         sorted.sort(null);
         assertEquals(sorted, keys);
+    }
+
+    // ------------------------------------------------------------------ формы пути (контракт rx-data 3.0, раздел 2b)
+
+    private static JsonSchemaAnalyzer analyzedJson(String... rows) {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        for (String row : rows) {
+            feed(analyzer, row, null);
+        }
+        return analyzer;
+    }
+
+    private static JsonNode reportOf(JsonSchemaAnalyzer analyzer) {
+        try {
+            return MAPPER.readTree(analyzer.buildJsonReport());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Пути отчёта без служебного schema_version. */
+    private static Set<String> reportPaths(JsonSchemaAnalyzer analyzer) {
+        Set<String> paths = new TreeSet<>();
+        reportOf(analyzer).fieldNames().forEachRemaining(paths::add);
+        paths.remove("schema_version");
+        return paths;
+    }
+
+    private static Set<String> reportAnomalies(JsonSchemaAnalyzer analyzer, String path) {
+        Set<String> names = new TreeSet<>();
+        reportOf(analyzer).path(path).path("anomalies").fieldNames().forEachRemaining(names::add);
+        return names;
+    }
+
+    private static String reportType(JsonSchemaAnalyzer analyzer, String path) {
+        return reportOf(analyzer).path(path).path("type").asText();
+    }
+
+    @Test
+    public void testPureObjectsHaveNoRecords() {
+        JsonSchemaAnalyzer analyzer = analyzedJson(
+                "{\"a\": {\"b\": {\"c\": 1}, \"e\": {}}, \"arr\": [{\"m\": {\"k\": 1}, \"s\": \"x\"}]}");
+        assertEquals(Set.of("$.a.b.c", "$.arr[*]", "$.arr[*].m.k", "$.arr[*].s"), reportPaths(analyzer),
+                "в отчёте только листья и массивы: ни одной записи объекта (в том числе {} и объект внутри элемента)");
+        assertEquals("ARRAY", reportType(analyzer, "$.arr[*]"));
+        // Форма «объект» при этом зафиксирована во внутреннем состоянии (нужна слиянию воркеров)
+        assertEquals("OBJECT", path(analyzer, "$.a").getFinalType());
+        assertEquals("OBJECT", path(analyzer, "$.arr[*].m").getFinalType());
+    }
+
+    @Test
+    public void testRootArrayOfObjects() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("[{\"a\": 1}, {\"a\": 2}]");
+        assertEquals(Set.of("$[*]", "$[*].a"), reportPaths(analyzer));
+        assertEquals("ARRAY", reportType(analyzer, "$[*]"));
+    }
+
+    @Test
+    public void testBsonWrapperIsNotAnObject() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"_id\": {\"$oid\": \"x\"}, \"d\": {\"$date\": {\"$numberLong\": \"1\"}}}");
+        assertEquals(Set.of("$._id.$oid", "$.d.$date.$numberLong"), reportPaths(analyzer));
+        assertFalse(analyzer.getSchemaMap().containsKey("$._id"), "обёртка не даёт формы OBJECT");
+        assertFalse(analyzer.getSchemaMap().containsKey("$.d.$date"), "вложенная обёртка тоже");
+    }
+
+    @Test
+    public void testBsonWrapperAndPlainScalarAreTwoLeaves() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"_id\": {\"$oid\": \"x\"}}", "{\"_id\": \"y\"}");
+        assertEquals(Set.of("$._id", "$._id.$oid"), reportPaths(analyzer));
+        assertEquals(Set.of(), reportAnomalies(analyzer, "$._id"), "обёртка — не вторая форма: неоднородности нет");
+    }
+
+    @Test
+    public void testObjectAndArrayOnSamePathArePolymorphic() {
+        String asObject = "{\"p\": {\"name\": \"n\"}}";
+        String asArray = "{\"p\": [{\"id\": \"i\", \"share\": 50}]}";
+        JsonSchemaAnalyzer forward = analyzedJson(asObject, asArray);
+        JsonSchemaAnalyzer backward = analyzedJson(asArray, asObject);
+
+        assertEquals(Set.of("$.p", "$.p.name", "$.p[*]", "$.p[*].id", "$.p[*].share"), reportPaths(forward));
+        assertEquals("OBJECT", reportType(forward, "$.p"), "объект + массив → тип записи OBJECT");
+        assertEquals(Set.of(PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE), reportAnomalies(forward, "$.p"));
+        assertEquals(Set.of("ARRAY", "OBJECT"), forward.structureForms("$.p"));
+        assertEquals("ARRAY", reportType(forward, "$.p[*]"));
+        assertEquals(Set.of(), reportAnomalies(forward, "$.p[*]"), "массив объектов не пуст, аномалий нет");
+        assertEquals(forward.buildJsonReport(), backward.buildJsonReport(), "порядок строк не влияет на отчёт");
+    }
+
+    @Test
+    public void testObjectAndScalarArePolymorphic() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"x\": {\"a\": 1}}", "{\"x\": \"text\"}");
+        assertEquals("VARCHAR", reportType(analyzer, "$.x"), "OBJECT со скаляром → VARCHAR");
+        assertEquals(4, reportOf(analyzer).path("$.x").path("max_length").asInt());
+        assertEquals(Set.of(PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE), reportAnomalies(analyzer, "$.x"));
+        assertEquals(Set.of("OBJECT", "SCALAR"), analyzer.structureForms("$.x"));
+        assertEquals("INTEGER", reportType(analyzer, "$.x.a"));
+    }
+
+    @Test
+    public void testScalarAndArrayArePolymorphic() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"b\": \"1990-05-15\"}", "{\"b\": [\"1990\", \"05\", \"15\"]}");
+        assertEquals(Set.of(PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE), reportAnomalies(analyzer, "$.b"));
+        assertEquals(Set.of("ARRAY", "SCALAR"), analyzer.structureForms("$.b"));
+    }
+
+    @Test
+    public void testThreeForms() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"x\": {\"a\": 1}}", "{\"x\": \"s\"}", "{\"x\": [1]}");
+        assertEquals(Set.of("ARRAY", "OBJECT", "SCALAR"), analyzer.structureForms("$.x"));
+        assertEquals("VARCHAR", reportType(analyzer, "$.x"));
+    }
+
+    @Test
+    public void testEmptyObjectIsAFormButLeavesNoRecord() {
+        assertEquals(Set.of(), reportPaths(analyzedJson("{\"x\": {}}")), "чистый пустой объект ничего не оставляет");
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"x\": {}}", "{\"x\": [1]}");
+        assertEquals(Set.of("ARRAY", "OBJECT"), analyzer.structureForms("$.x"), "но формой OBJECT является");
+        assertEquals(Set.of(PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE), reportAnomalies(analyzer, "$.x"));
+    }
+
+    @Test
+    public void testObjectNodeMergeIsCommutative() {
+        JsonSchemaAnalyzer asObject = analyzedJson("{\"x\": {\"a\": 1}}");
+        JsonSchemaAnalyzer asScalar = analyzedJson("{\"x\": \"s\"}");
+        JsonSchemaAnalyzer ab = analyzedJson("{\"x\": {\"a\": 1}}");
+        ab.merge(asScalar);
+        JsonSchemaAnalyzer ba = analyzedJson("{\"x\": \"s\"}");
+        ba.merge(asObject);
+        assertEquals("VARCHAR", reportType(ab, "$.x"));
+        assertEquals(ab.buildJsonReport(), ba.buildJsonReport());
+    }
+
+    // ------------------------------------------------------------------ jsonstring
+
+    @Test
+    public void testJsonStringObject() {
+        String inner = "{\"u\": \"a\", \"n\": 1}";
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": " + quote(inner) + "}");
+        assertEquals("VARCHAR", reportType(analyzer, "$.m"));
+        assertEquals(inner.length(), reportOf(analyzer).path("$.m").path("max_length").asInt(), "длина исходной строки");
+        assertEquals(Set.of(ANOMALY_JSON_STRING), reportAnomalies(analyzer, "$.m"), "одна форма — неоднородности нет");
+        assertEquals(Set.of(PathMetrics.TYPE_JSON_STRING, PathMetrics.TYPE_JSON_OBJECT), path(analyzer, "$.m").getTypes(),
+                "содержимое — форма JSON_OBJECT, а не нативный OBJECT");
+        assertEquals("VARCHAR", reportType(analyzer, "$.m.u"));
+        assertEquals("INTEGER", reportType(analyzer, "$.m.n"));
+    }
+
+    @Test
+    public void testJsonStringArray() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": " + quote("[{\"k\": 1}, {\"k\": 2}]") + "}");
+        assertEquals(Set.of(ANOMALY_JSON_STRING), reportAnomalies(analyzer, "$.m"));
+        assertEquals("ARRAY", reportType(analyzer, "$.m[*]"));
+        assertEquals(Set.of(), reportAnomalies(analyzer, "$.m[*]"), "массив объектов не пуст");
+        assertEquals("INTEGER", reportType(analyzer, "$.m[*].k"));
+    }
+
+    @Test
+    public void testJsonStringObjectOrArrayIsPolymorphic() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": " + quote("{\"u\": \"a\"}") + "}", "{\"m\": " + quote("[{\"k\": 1}]") + "}");
+        assertEquals(Set.of(ANOMALY_JSON_STRING, PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE), reportAnomalies(analyzer, "$.m"));
+        assertEquals(Set.of("ARRAY", "JSON_OBJECT"), analyzer.structureForms("$.m"));
+        assertEquals("VARCHAR", reportType(analyzer, "$.m"));
+    }
+
+    @Test
+    public void testJsonStringWithPlainStrings() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": " + quote("{\"u\": \"a\"}") + "}", "{\"m\": \"\"}", "{\"m\": \"n/a\"}");
+        assertEquals(Set.of(ANOMALY_JSON_STRING, PathMetrics.ANOMALY_NON_JSON_STRINGS, PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE),
+                reportAnomalies(analyzer, "$.m"));
+        assertEquals(Set.of("JSON_OBJECT", "SCALAR"), analyzer.structureForms("$.m"));
+    }
+
+    @Test
+    public void testJsonStringWithNativeObject() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"m\": {\"u\": \"a\"}}", "{\"m\": " + quote("{\"u\": \"a\"}") + "}");
+        assertEquals(Set.of(ANOMALY_JSON_STRING, PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE), reportAnomalies(analyzer, "$.m"),
+                "нативный объект рядом с JSON-строкой различим по формам; обычных строк нет");
+        assertEquals(Set.of("JSON_OBJECT", "OBJECT"), analyzer.structureForms("$.m"));
+    }
+
+    @Test
+    public void testTextLookingLikeJsonIsPlainString() {
+        for (String text : List.of("{abc}", "{\"a\":}", "[1,", "[x]", "[TEST]", "{\"a\": 1} {\"b\": 2}")) {
+            JsonSchemaAnalyzer analyzer = analyzedJson("{\"t\": " + quote(text) + "}");
+            assertEquals(Set.of("$.t"), reportPaths(analyzer), "текст не оставляет путей: " + text);
+            assertEquals(Set.of(), reportAnomalies(analyzer, "$.t"), text);
+            assertEquals(text.length(), reportOf(analyzer).path("$.t").path("max_length").asInt(), text);
+        }
+    }
+
+    @Test
+    public void testJsonStringInsideArray() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"l\": [" + quote("{\"a\": 1}") + "]}");
+        assertEquals(Set.of(ANOMALY_JSON_STRING), reportAnomalies(analyzer, "$.l[*]"),
+                "не пуст, не плоский строковый массив, строка с JSON");
+        assertEquals("INTEGER", reportType(analyzer, "$.l[*].a"));
+    }
+
+    private static String quote(String text) {
+        try {
+            return MAPPER.writeValueAsString(text);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    // ------------------------------------------------------------------ пустота массива
+
+    @Test
+    public void testOnlyArrayWithoutElementsIsEmpty() {
+        JsonSchemaAnalyzer analyzer = analyzedJson(
+                "{\"o\": [{\"a\": 1}], \"f\": [1.5], \"b\": [true], \"n\": [null], \"e\": []}");
+        for (String notEmpty : List.of("$.o[*]", "$.f[*]", "$.b[*]", "$.n[*]")) {
+            assertFalse(path(analyzer, notEmpty).hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY), notEmpty + " не пуст");
+        }
+        assertTrue(path(analyzer, "$.e[*]").hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY));
+        assertTrue(path(analyzer, "$.n[*]").getAnomalies().isEmpty(), "[null] — не плоский строковый массив");
+    }
+
+    @Test
+    public void testEmptyAndNonEmptyArraysOnSamePath() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"o\": []}", "{\"o\": [{\"a\": 1}]}");
+        assertTrue(path(analyzer, "$.o[*]").hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY),
+                "встреченный пустой массив фиксируется монотонно");
+    }
+
+    // ------------------------------------------------------------------ вложенные массивы
+
+    /**
+     * Регрессия: вложенный массив путь не меняет ({@code $.a[*]}) и маркер {@code [*]} со стека не снимает — снимает только массив,
+     * который его поставил. Раньше первый внутренний {@code END_ARRAY} снимал маркер внешнего массива, и второй и следующие
+     * внутренние массивы писались на корневой путь {@code $[*]}.
+     */
+    @Test
+    public void testNestedArraysKeepPathBalance() {
+        JsonSchemaAnalyzer analyzer = analyzedJson("{\"a\": [[1, 2], [3]], \"b\": \"x\", \"c\": {\"d\": 1}}");
+        assertTrue(reportPaths(analyzer).contains("$.b"), "путь $.b после вложенных массивов: " + reportPaths(analyzer));
+        assertTrue(reportPaths(analyzer).contains("$.c.d"), "путь $.c.d после вложенных массивов: " + reportPaths(analyzer));
+        assertEquals(Set.of("$.a[*]", "$.b", "$.c.d"), reportPaths(analyzer));
+    }
+
+    @Test
+    public void testNestedArraysOfObjectsAndRootNesting() {
+        JsonSchemaAnalyzer objects = analyzedJson("{\"a\": [[{\"k\": 1}], [{\"k\": 2}], []], \"b\": 1}");
+        assertEquals(Set.of("$.a[*]", "$.a[*].k", "$.b"), reportPaths(objects), "массивы объектов во вложенных массивах");
+        assertTrue(path(objects, "$.a[*]").hasAnomaly(AnomalyDetector.METRIC_IS_EMPTY), "внутренний [] встретился");
+
+        JsonSchemaAnalyzer root = analyzedJson("[[1, 2], [3]]");
+        assertEquals(Set.of("$[*]"), reportPaths(root), "корневой массив массивов: один путь");
+    }
+
+    // ------------------------------------------------------------------ trace форм и JSON-строк
+
+    @Test
+    public void testStructureTraceHasFirstDocumentOfEveryForm() throws Exception {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, "{\"_id\": {\"$oid\": \"" + oid(1) + "\"}, \"p\": {\"a\": 1}}", PRESET);
+        feed(analyzer, "{\"_id\": {\"$oid\": \"" + oid(2) + "\"}, \"p\": [{\"b\": 1}]}", PRESET);
+        feed(analyzer, "{\"_id\": {\"$oid\": \"" + oid(3) + "\"}, \"p\": \"s\"}", PRESET);
+        JsonNode trace = reportOf(analyzer).at("/$.p/anomalies/is_polymorphic_structure/trace");
+        Set<String> seen = new TreeSet<>();
+        trace.forEach(item -> seen.add(item.get("form").asText() + ":" + item.get("id").asText()));
+        assertEquals(Set.of("ARRAY:" + oid(2), "OBJECT:" + oid(1), "SCALAR:" + oid(3)), seen);
+    }
+
+    @Test
+    public void testJsonStringTraces() throws Exception {
+        JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+        feed(analyzer, "{\"_id\": {\"$oid\": \"" + oid(1) + "\"}, \"m\": " + quote("{\"u\": 1}") + "}", PRESET);
+        feed(analyzer, "{\"_id\": {\"$oid\": \"" + oid(2) + "\"}, \"m\": \"n/a\"}", PRESET);
+        JsonNode m = reportOf(analyzer).get("$.m");
+        assertEquals(oid(1), m.at("/anomalies/is_json_string/trace/0/id").asText(), "первая JSON-строка");
+        assertEquals(oid(2), m.at("/anomalies/has_non_json_strings/trace/0/id").asText(), "первая обычная строка");
+        assertTrue(m.has("path_trace"));
     }
 
     // ------------------------------------------------------------------ trace: источник id

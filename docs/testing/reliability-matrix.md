@@ -128,20 +128,46 @@ mise run lc-verify
 
 ## GitHub Actions CI
 
-Файл `.github/workflows/reliability-matrix.yml`:
+Файл `.github/workflows/reliability-matrix.yml` — три job-а последовательно:
+
+1. **`matrix-test`** — по каждой версии Trino: `./gradlew test` + `./gradlew e2eTest` (in-process, без Docker).
+2. **`install-smoke`** — по каждой версии Trino (`fail-fast: false`): `./gradlew installSmokeTest` в реальном образе
+   `trinodb/trino:<версия>` через Testcontainers. Задача сама собирает плагин (`deployPlugin`), поэтому
+   проверяется именно тот артефакт, что пойдёт в релиз.
+3. **`publish`** — только при push/merge в `main` (или ручном `workflow_dispatch`) и только если прошли job-ы 1–2.
 
 ```yaml
 matrix:
   trino-version: [481, 482, 483]
 ```
 
-Каждая ячейка:
-1. `./gradlew test -PtrinoVersion=${{ matrix.trino-version }}`
-2. `./gradlew e2eTest -PtrinoVersion=${{ matrix.trino-version }}`
+## Публикация релиза
 
-Install-smoke (отдельный job):
-1. `./gradlew build -PtrinoVersion=483`
-2. `./gradlew installSmokeTest -PtrinoVersion=483`
+Релиз собирается из того же коммита, что прошёл все проверки, — не из локального `build/libs`:
+
+```bash
+# Локально: архивы и суммы для одной версии Trino
+./gradlew release -PtrinoVersion=481     # → build/libs/release/
+```
+
+Ассеты релиза (тег `v<distdocVersion>`):
+
+| Ассет | Что внутри |
+|---|---|
+| `trino-<Trino>-distdoc-<DistDoc>.zip` | каталог плагина `distdoc/` (тонкий jar + runtime-зависимости) и `contract/` (контракт rx-data и схема) — по одному архиву на каждую версию Trino |
+| `distdoc-schema-<X.Y>.json` | машиночитаемая схема rx-data (одна на версию схемы, без привязки к версии Trino) |
+| `SHA256SUMS` | контрольные суммы всех архивов и схемы |
+
+Правила и обоснование (почему N zip и одна схема, как читается версия из имени) —
+`local/research/schema-versioning-and-release.md`. Токен не нужен: публикация идёт штатным
+`GITHUB_TOKEN` с правом `contents: write`, выданным только job-у `publish`.
+
+Ручные команды вокруг публикации — выпуск rc, правка пометки prerelease, перезалив ассетов —
+`docs/releasing/release-candidates.md`.
+
+Секреты для этого не требуются. Если позже понадобится публиковать в другой репозиторий или
+пакетный реестр (Maven Central, GHCR), тогда нужен отдельный PAT или `GITHUB_TOKEN` с
+`packages: write` — это отдельное решение.
 
 ---
 

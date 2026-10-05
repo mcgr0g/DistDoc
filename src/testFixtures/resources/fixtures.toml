@@ -1,6 +1,6 @@
 # Сценарии генерации хаос-данных.
 # Что должна показать каждая таблица — docs/testing/fixture-matrix.md (префикс = ось проверки:
-# fmt_ — формат/тип одного поля, arr_ — аномалия массива, pol_ — полиморфизм форматов, trace_ — источник id).
+# fmt_ — формат/тип одного поля, arr_ — аномалия массива, pol_ — полиморфизм форматов, obj_ — структура объектов, trace_ — источник id).
 # type — режим AnomalyScenario в нижнем регистре; file — по имени таблицы.
 # Состав таблиц сверяет FixtureMatrixTest: новая таблица без ожиданий в матрице роняет unit-тесты.
 
@@ -102,6 +102,85 @@ table = "pol_created_at_with_rating"
 count = 60
 type = "pol_created_at_with_rating"
 file = "build/dev-lakehouse/data/pol_created_at_with_rating.jsonl"
+
+# --- Структура объектов (fixture-matrix §1a) ---
+
+[[scenarios]]
+# profile: вложенные объекты и пустой {} → узлы OBJECT
+table = "obj_nested_plain"
+count = 60
+type = "obj_nested_plain"
+file = "build/dev-lakehouse/data/obj_nested_plain.jsonl"
+
+[[scenarios]]
+# items: массив объектов с вложенным dims → $.items[*] ARRAY, узла $.items нет
+table = "obj_array_of_objects"
+count = 60
+type = "obj_array_of_objects"
+file = "build/dev-lakehouse/data/obj_array_of_objects.jsonl"
+
+[[scenarios]]
+# party: объект (i%2==0) или массив объектов (i%2==1) → две независимые ветки P и P[*]
+table = "obj_object_or_array"
+count = 60
+type = "obj_object_or_array"
+file = "build/dev-lakehouse/data/obj_object_or_array.jsonl"
+
+[[scenarios]]
+# contact: объект (i%2==0) или строка "n/a" → type VARCHAR, дети $.contact.*
+table = "obj_object_or_scalar"
+count = 60
+type = "obj_object_or_scalar"
+file = "build/dev-lakehouse/data/obj_object_or_scalar.jsonl"
+
+[[scenarios]]
+# party + signed_at: разные написания по ветке → observed_formats независимы
+table = "obj_object_or_array_formats"
+count = 60
+type = "obj_object_or_array_formats"
+file = "build/dev-lakehouse/data/obj_object_or_array_formats.jsonl"
+
+[[scenarios]]
+# meta: JSON-строка — объект (i%2==0) или массив (i%2==1) → is_json_string + is_polymorphic_structure (JSON_OBJECT, ARRAY)
+table = "obj_json_object_or_array"
+count = 60
+type = "obj_json_object_or_array"
+file = "build/dev-lakehouse/data/obj_json_object_or_array.jsonl"
+
+[[scenarios]]
+# list: массив JSON-строк → $.list[*] VARCHAR + is_json_string
+table = "obj_json_array_elements"
+count = 60
+type = "obj_json_array_elements"
+file = "build/dev-lakehouse/data/obj_json_array_elements.jsonl"
+
+[[scenarios]]
+# meta: JSON-строка или ""/"n/a" → is_json_string + has_non_json_strings
+table = "obj_json_with_plain"
+count = 60
+type = "obj_json_with_plain"
+file = "build/dev-lakehouse/data/obj_json_with_plain.jsonl"
+
+[[scenarios]]
+# meta: нативный объект или JSON-строка → is_polymorphic_structure (OBJECT, JSON_OBJECT)
+table = "obj_json_with_native_object"
+count = 60
+type = "obj_json_with_native_object"
+file = "build/dev-lakehouse/data/obj_json_with_native_object.jsonl"
+
+[[scenarios]]
+# t: [TEST] / {abc} — не JSON → обычная строка, путей нет
+table = "obj_json_false_alarm"
+count = 60
+type = "obj_json_false_alarm"
+file = "build/dev-lakehouse/data/obj_json_false_alarm.jsonl"
+
+[[scenarios]]
+# _id: BSON-обёртка или строка → листья $._id и $._id.$oid без узла OBJECT
+table = "obj_bson_id_forms"
+count = 60
+type = "obj_bson_id_forms"
+file = "build/dev-lakehouse/data/obj_bson_id_forms.jsonl"
 
 # --- Трассировка (fixture-matrix §3) ---
 

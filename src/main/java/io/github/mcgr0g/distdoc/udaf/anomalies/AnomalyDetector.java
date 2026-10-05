@@ -38,7 +38,7 @@ import io.github.mcgr0g.distdoc.udaf.PathMetrics;
 public class AnomalyDetector implements ArrayAnomalyDetector {
 
     /**
-     * Ключ аномалии: Массив пуст.
+     * Ключ аномалии: в выборке встретился пустой массив (любой элемент, включая объект, делает массив непустым).
      * Соответствует ключу в {@code anomalies} итогового JSON-отчета.
      */
     public static final String METRIC_IS_EMPTY = "is_array_empty";
@@ -65,9 +65,13 @@ public class AnomalyDetector implements ArrayAnomalyDetector {
     public void detect(ArrayContext context, PathMetrics metrics) {
         var elements = context.elements();
 
-        // 1. Проверка на пустой массив
-        if (elements.isEmpty()) {
+        // 1. Проверка на пустой массив: пуст только массив без элементов вообще (массив объектов не пуст)
+        if (context.totalElements() == 0) {
             metrics.markAnomaly(METRIC_IS_EMPTY);
+            return;
+        }
+        // Элементы есть, но скалярных литералов среди них нет (объекты, вложенные массивы, null) — плоских аномалий нет
+        if (elements.isEmpty()) {
             return;
         }
 

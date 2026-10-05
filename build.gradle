@@ -142,6 +142,8 @@ tasks.register('installSmokeTest', Test) {
     description = 'Install-smoke тест: реальный образ trinodb/trino через Testcontainers'
     testClassesDirs = sourceSets.e2e.output.classesDirs
     classpath = sourceSets.e2e.runtimeClasspath
+    // DistDocInstallSmokeTest берёт образ trinodb/trino:<trinoVersion> из system property
+    systemProperty 'trinoVersion', trinoVer
     useJUnitPlatform {
         includeTags 'install-smoke'
     }
@@ -157,6 +159,14 @@ tasks.register('installSmokeTest', Test) {
 
 tasks.named('check') {
     dependsOn('e2eTest')
+}
+
+tasks.named('test') {
+    systemProperty 'trinoVersion', trinoVer
+}
+
+tasks.named('e2eTest') {
+    systemProperty 'trinoVersion', trinoVer
 }
 
 // Полная обратная связь для агента: check (unit + e2e) + install-smoke (нужен Docker).
@@ -175,6 +185,55 @@ tasks.named('installSmokeTest') {
 jar {
     archiveBaseName.set("trino-${trinoVer}-distdoc")
     archiveVersion.set(distdocVer)
+}
+
+// =========================================================================
+// РЕЛИЗНЫЕ АРХИВЫ (локально и в CI перед публикацией; сам релиз — .github/workflows/publish.yml)
+// =========================================================================
+
+def releaseDir = layout.buildDirectory.dir('libs/release')
+
+// Zip каталога плагина (тонкий jar + runtime-зависимости) для конкретной версии Trino.
+// Имя несёт обе версии: Trino и DistDoc (= версия схемы rx-data), см. local/research/schema-versioning-and-release.md
+tasks.register('releaseZip', Zip) {
+    group = 'distribution'
+    description = "Релизный zip плагина для Trino ${trinoVer}: артефакт distdoc/ и контракт contract/"
+    dependsOn('deployPlugin')
+    archiveFileName.set("trino-${trinoVer}-distdoc-${distdocVer}.zip")
+    destinationDirectory.set(releaseDir)
+    from(layout.buildDirectory.dir('libs/dist')) { into 'distdoc' }
+    // Контракт рядом с артефактом: потребитель видит, какому rx-data соответствует сборка
+    from('docs/contracts/rx-data-contract.md') { into 'contract' }
+    from('docs/contracts/rx-data.schema.json') { into 'contract' }
+}
+
+tasks.register('releaseChecksums') {
+    group = 'distribution'
+    description = 'SHA256 всех релизных архивов в build/libs/release/SHA256SUMS'
+    dependsOn('releaseZip')
+    def dir = releaseDir.get().asFile
+    outputs.upToDateWhen { false } // содержимое зависит от архивов, их up-to-date проверяет сам releaseZip
+    doLast {
+        def archives = dir.listFiles().findAll { it.name.endsWith('.zip') }.sort { it.name }
+        if (archives.isEmpty()) {
+            throw new GradleException("В ${dir} нет релизных архивов — сначала releaseZip")
+        }
+        def lines = archives.collect { f ->
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            f.withInputStream { digest.update(it.bytes) }
+            "${digest.digest().encodeHex().toString()}  ${f.name}"
+        }
+        def sums = new File(dir, 'SHA256SUMS')
+        sums.text = lines.join('\n') + '\n'
+        println("WROTE ${sums.absolutePath}")
+    }
+}
+
+// Сборка релизных архивов: ./gradlew releaseZip releaseChecksums -PtrinoVersion=481
+tasks.register('release') {
+    group = 'distribution'
+    description = 'Релизные архивы и контрольные суммы для версии Trino (по умолчанию из gradle.properties)'
+    dependsOn('releaseChecksums')
 }
 
 

@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/mcgr0g/distdoc/main/docs/contracts/rx-data.schema.json",
-  "$comment": "Машиночитаемый контракт rx-data 2.0 (.rx.json), выход UDAF analyze_json_schema; описание — rx-data-contract.md, форматы — value-formats.md. Версия схемы = X.Y из версии плагина X.Y.Z.",
-  "title": "DistDoc rx-data (.rx.json) 2.0",
+  "$comment": "Машиночитаемый контракт rx-data 3.0 (.rx.json), выход UDAF analyze_json_schema; описание — rx-data-contract.md, форматы — value-formats.md. Версия схемы = X.Y из версии плагина X.Y.Z.",
+  "title": "DistDoc rx-data (.rx.json) 3.0",
   "description": "rx-data: { \"<jsonpath>\": { \"type\", \"max_length\", \"observed_formats\"?, \"anomalies\"?, \"path_trace\"? } }. Имена jsonpath-ключей произвольны (зависят от данных), форма значений фиксирована. Пути записаны в лексикографическом порядке.",
   "type": "object",
   "properties": {
     "schema_version": {
       "type": "string",
-      "pattern": "^2\\.\\d+$",
-      "description": "Версия схемы rx-data (major.minor), например \"2.0\"."
+      "pattern": "^3\\.\\d+$",
+      "description": "Версия схемы rx-data (major.minor), например \"3.0\"."
     }
   },
   "required": ["schema_version"],
@@ -23,7 +23,7 @@
           "$comment": "Поле данных rx-data «type» (не ключевое слово JSON Schema); имя зафиксировано SchemaStateSerializer.FIELD_TYPE — не переименовывать.",
           "type": "string",
           "description": "Итоговый физический тип пути (сведённый по правилу Type Promotion).",
-          "enum": ["UNKNOWN", "VARCHAR", "INTEGER", "DOUBLE", "ARRAY", "BOOLEAN"]
+          "enum": ["UNKNOWN", "VARCHAR", "INTEGER", "DOUBLE", "ARRAY", "BOOLEAN", "OBJECT"]
         },
         "max_length": {
           "type": "integer",
@@ -91,6 +91,11 @@
         "format": {
           "$ref": "#/$defs/valueFormat",
           "description": "Только в trace is_polymorphic_format: какое написание дал этот документ."
+        },
+        "form": {
+          "type": "string",
+          "enum": ["SCALAR", "OBJECT", "JSON_OBJECT", "ARRAY"],
+          "description": "Только в trace is_polymorphic_structure: какую форму пути дал этот документ."
         }
       },
       "required": ["id", "id_key"],

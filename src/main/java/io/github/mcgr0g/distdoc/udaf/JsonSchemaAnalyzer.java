@@ -63,6 +63,12 @@ public class JsonSchemaAnalyzer {
     /** Ключи отчёта и внутреннего состояния (форма отчёта — docs/contracts/rx-data-contract.md). */
     static final String FIELD_SCHEMA_VERSION = "schema_version";
     static final String FIELD_TYPE = "type";
+    /** Только во внутреннем состоянии между воркерами: набор типов пути вместо свёрнутого {@code type}. */
+    static final String FIELD_TYPES = "types";
+    /** Только во внутреннем состоянии между воркерами: trace по типам (источник trace производных аномалий). */
+    static final String FIELD_TYPE_TRACE = "type_trace";
+    /** Форма пути в trace {@code is_polymorphic_structure}. */
+    static final String FIELD_FORM = "form";
     static final String FIELD_MAX_LENGTH = "max_length";
     static final String FIELD_OBSERVED_FORMATS = "observed_formats";
     static final String FIELD_ANOMALIES = "anomalies";
@@ -74,6 +80,11 @@ public class JsonSchemaAnalyzer {
     static final String FIELD_FORMAT = "format";
     /** Только во внутреннем состоянии между воркерами: trace по форматам (источник trace полиморфизма). */
     static final String FIELD_FORMAT_TRACE = "format_trace";
+
+    /** Аномалии, вычисляемые при сборке отчёта: в состояние не пишутся, при чтении состояния игнорируются. */
+    private static final Set<String> COMPUTED_ANOMALIES = Set.of(
+            PathMetrics.ANOMALY_POLYMORPHIC_FORMAT, PathMetrics.ANOMALY_JSON_STRING,
+            PathMetrics.ANOMALY_NON_JSON_STRINGS, PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE);
 
     /** Подключаемый плагин-детектор dbt-аномалий в массивах. */
     private final ArrayAnomalyDetector anomalyDetector = new AnomalyDetector();
@@ -92,6 +103,9 @@ public class JsonSchemaAnalyzer {
 
     /** Стек путей для отслеживания вложенных или параллельных массивов. */
     private final Deque<String> arrayPathStack = new ArrayDeque<>();
+
+    /** Счётчик всех элементов текущего массива любого типа (единственный критерий пустоты, {@code is_array_empty}). */
+    private final Deque<int[]> arrayCountStack = new ArrayDeque<>();
 
     // ------------------------------------------------------------------
     // Состояние трассировки идентификаторов (per-row; сбрасывается в начале analyze)
@@ -124,6 +138,13 @@ public class JsonSchemaAnalyzer {
     /** Форматы, впервые доказанные в текущей строке: путь -> форматы. */
     private final Map<String, Set<ValueFormat>> newFormatsThisRow = new HashMap<>();
 
+    /** Типы, впервые зафиксированные на пути в текущей строке: путь -> типы (источник trace производных аномалий). */
+    private final Map<String, Set<String>> newTypesThisRow = new HashMap<>();
+
+    /** Объект, чей первый ключ ещё не прочитан: BSON-обёртка ({@code $…}) формы объекта не даёт. */
+    private String pendingObjectPath = null;
+    private String pendingObjectType = null;
+
     /**
      * Возвращает мутабельную карту собранной схемы.
      * Используется сериализатором для маршалинга промежуточных результатов по сети.
@@ -149,7 +170,7 @@ public class JsonSchemaAnalyzer {
         try (JsonParser parser = FACTORY.createParser(input)) {
             Deque<String> rootPathStack = new ArrayDeque<>();
             rootPathStack.push("$");
-            parseTokens(parser, rootPathStack);
+            parseTokens(parser, rootPathStack, false);
         } catch (Exception e) {
             // Стабильность для DWH
         }
@@ -180,7 +201,7 @@ public class JsonSchemaAnalyzer {
         try (JsonParser parser = FACTORY.createParser(input)) {
             Deque<String> rootPathStack = new ArrayDeque<>();
             rootPathStack.push("$");
-            parseTokens(parser, rootPathStack);
+            parseTokens(parser, rootPathStack, false);
         } catch (Exception e) {
             // Стабильность для DWH
         }
@@ -196,6 +217,9 @@ public class JsonSchemaAnalyzer {
         newPathsThisRow.clear();
         newAnomaliesThisRow.clear();
         newFormatsThisRow.clear();
+        newTypesThisRow.clear();
+        pendingObjectPath = null;
+        pendingObjectType = null;
     }
 
     /** Активен ли trace-режим (явный или пресет) на текущей строке. */
@@ -309,6 +333,21 @@ public class JsonSchemaAnalyzer {
                 metrics.addFormatTrace(format, traceId, traceIdKey);
             }
         }
+        for (Map.Entry<String, Set<String>> e : newTypesThisRow.entrySet()) {
+            PathMetrics metrics = schemaMap.get(e.getKey());
+            for (String type : e.getValue()) {
+                metrics.addTypeTrace(type, traceId, traceIdKey);
+            }
+        }
+    }
+
+    /**
+     * Фиксирует тип на пути; в trace-режиме новый для пути тип запоминается для раскладки id в конце строки.
+     */
+    private void recordType(String path, String type) {
+        if (getOrCreateMetrics(path).addType(type) && isTraceActive()) {
+            newTypesThisRow.computeIfAbsent(path, k -> new TreeSet<>()).add(type);
+        }
     }
 
     /**
@@ -328,52 +367,79 @@ public class JsonSchemaAnalyzer {
      * Внутренний циклический диспетчер токенов Jackson.
      * Управляет навигацией по документу и координирует рост/сокращение стека путей.
      *
-     * @param parser    активный экземпляр парсера Jackson
-     * @param pathStack изолированный стек путей текущего уровня вложенности (рекурсии)
+     * <p>Формы пути (контракт rx-data 3.0, раздел 2b): объект — значение ключа — фиксирует на своём пути тип
+     * {@code OBJECT} (в отчёт попадает только у неоднородного поля); BSON-обёртка (первый ключ начинается с {@code $}),
+     * корень документа и объект-элемент массива формы не дают; корень содержимого jsonstring даёт {@code JSON_OBJECT}.</p>
+     *
+     * @param parser      активный экземпляр парсера Jackson
+     * @param pathStack   изолированный стек путей текущего уровня вложенности (рекурсии)
+     * @param subDocument {@code true} для содержимого jsonstring: первый контейнер — значение пути строки, а не объект на нём
      * @throws Exception при системных ошибках чтения потока
      */
-    private void parseTokens(JsonParser parser, Deque<String> pathStack) throws Exception {
+    private void parseTokens(JsonParser parser, Deque<String> pathStack, boolean subDocument) throws Exception {
+        int depth = 0;
+        // Какие открытые массивы поставили маркер [*] на стек путей: внутренний массив (массив в массиве) путь не меняет
+        // и маркер не снимает — иначе второй и следующие внутренние массивы уходят на корневой путь $[*]
+        Deque<Boolean> ownsMarker = new ArrayDeque<>();
         JsonToken token;
         while ((token = parser.nextToken()) != null) {
             String currentPath = buildJsonPath(pathStack);
 
             switch (token) {
                 case FIELD_NAME:
+                    resolvePendingObject(parser.currentName());
                     pathStack.push(parser.currentName());
                     break;
 
                 case START_OBJECT:
+                    countArrayElement(pathStack);
                     if (isInsideArray(pathStack)) {
                         invalidateFlatArrayFlags();
+                    } else if (isKeyedValue(pathStack)) {
+                        // Форма объекта решается по первому ключу (BSON-обёртка — не объект); {} решается на END_OBJECT
+                        pendingObjectPath = currentPath;
+                        pendingObjectType = (subDocument && depth == 0) ? PathMetrics.TYPE_JSON_OBJECT : PathMetrics.TYPE_OBJECT;
                     }
+                    depth++;
                     break;
 
                 case START_ARRAY:
+                    countArrayElement(pathStack);
+                    depth++;
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         String arrayField = pathStack.pop();
                         pathStack.push(arrayField + "[*]");
+                        ownsMarker.push(true);
                     } else if (pathStack.isEmpty() || pathStack.peek().equals("$")) {
                         pathStack.push("[*]");
+                        ownsMarker.push(true);
+                    } else {
+                        ownsMarker.push(false); // массив в массиве: путь тот же ($.a[*])
                     }
 
                     String fullArrayPath = buildJsonPath(pathStack);
-                    getOrCreateMetrics(fullArrayPath).addType("ARRAY");
+                    recordType(fullArrayPath, PathMetrics.TYPE_ARRAY);
 
                     arrayPathStack.push(fullArrayPath);
                     arrayElementsStack.push(new ArrayList<>());
+                    arrayCountStack.push(new int[1]);
                     arrayAllStringsStack.push(true);
                     arrayAllNumbersStack.push(true);
                     break;
 
                 case END_OBJECT:
+                    resolvePendingObject(null); // пустой объект: ключей не было, обёрткой быть не может
+                    depth--;
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
                     }
                     break;
 
                 case END_ARRAY:
+                    depth--;
                     handleEndArray();
-                    if (!pathStack.isEmpty() && pathStack.peek().endsWith("[*]")) {
+                    boolean owned = ownsMarker.isEmpty() || ownsMarker.pop();
+                    if (owned && !pathStack.isEmpty() && pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
                     }
                     break;
@@ -393,7 +459,8 @@ public class JsonSchemaAnalyzer {
                     break;
 
                 case VALUE_NUMBER_FLOAT:
-                    getOrCreateMetrics(currentPath).addType("DOUBLE");
+                    countArrayElement(pathStack);
+                    recordType(currentPath, "DOUBLE");
                     recordFormat(currentPath, FormatDetector.detectDouble(
                             parser.getDoubleValue(), FormatDetector.numericContext(currentPath, FORMAT_HINTS)));
                     if (isInsideArray(pathStack)) invalidateFlatArrayFlags();
@@ -404,7 +471,8 @@ public class JsonSchemaAnalyzer {
 
                 case VALUE_TRUE:
                 case VALUE_FALSE:
-                    getOrCreateMetrics(currentPath).addType("BOOLEAN");
+                    countArrayElement(pathStack);
+                    recordType(currentPath, "BOOLEAN");
                     if (isInsideArray(pathStack)) invalidateFlatArrayFlags();
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
@@ -412,6 +480,7 @@ public class JsonSchemaAnalyzer {
                     break;
 
                 case VALUE_NULL:
+                    countArrayElement(pathStack);
                     if (!pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]")) {
                         pathStack.pop();
                     }
@@ -426,22 +495,27 @@ public class JsonSchemaAnalyzer {
      */
     private void handleStringValue(JsonParser parser, String currentPath, Deque<String> pathStack) throws Exception {
         String text = parser.getText();
+        countArrayElement(pathStack);
 
-        // Быстрая проверка маркеров начала и конца структуры JSON объекта/массива
-        if (text != null && ((text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]")))) {
+        // JSON-строка: валидный JSON-контейнер целиком. Невалидный текст ([TEST], {abc}) — обычная строка:
+        // валидирующий проход до рабочего не оставляет в схеме частично записанных путей
+        if (isJsonContainer(text)) {
             try (JsonParser subParser = FACTORY.createParser(text)) {
-                Deque<String> subPathStack = new ArrayDeque<>(pathStack);
-                parseTokens(subParser, subPathStack);
-                return; // Успешно вышли из рекурсии под-документа, прерываем обработку обычной строки
-            } catch (Exception e) {
-                // Ошибка парсинга означает ложную тревогу — строка обрабатывается ниже как обычный текст
+                parseTokens(subParser, new ArrayDeque<>(pathStack), true);
             }
+            // Путь строки: JSON_STRING (в отчёте VARCHAR, is_json_string), длина сырой строки; элемент массива — не плоский литерал
+            recordType(currentPath, PathMetrics.TYPE_JSON_STRING);
+            getOrCreateMetrics(currentPath).updateLength(text.length());
+            if (isInsideArray(pathStack)) {
+                invalidateFlatArrayFlags();
+            }
+            return;
         }
 
         // Сбор trace-id из обычной строки (экранированный под-документ выше уже обработан рекурсией)
         collectTraceValue(currentPath, text);
 
-        getOrCreateMetrics(currentPath).addType("VARCHAR");
+        recordType(currentPath, PathMetrics.TYPE_VARCHAR);
         getOrCreateMetrics(currentPath).updateLength(parser.getTextLength());
         recordFormat(currentPath, FormatDetector.detectString(text, currentPath, FORMAT_HINTS));
 
@@ -459,10 +533,11 @@ public class JsonSchemaAnalyzer {
      * Обработчик целочисленных значений. Фиксирует тип INTEGER и сбрасывает текстовые флаги массива.
      */
     private void handleIntValue(JsonParser parser, String currentPath, Deque<String> pathStack) throws Exception {
+        countArrayElement(pathStack);
         // Сбор trace-id из целочисленного скаляра (BSON-числовые id не типичны, но целые — валидный кандидат)
         collectTraceValue(currentPath, parser.getText());
 
-        getOrCreateMetrics(currentPath).addType("INTEGER");
+        recordType(currentPath, "INTEGER");
         // Значения вне диапазона long (BIG_INTEGER) Unix-временем не считаются
         JsonParser.NumberType numberType = parser.getNumberType();
         if (numberType == JsonParser.NumberType.INT || numberType == JsonParser.NumberType.LONG) {
@@ -488,6 +563,7 @@ public class JsonSchemaAnalyzer {
             List<String> elements = arrayElementsStack.pop();
             boolean allStrings = arrayAllStringsStack.pop();
             boolean allNumbers = arrayAllNumbersStack.pop();
+            int totalElements = arrayCountStack.pop()[0];
 
             PathMetrics metrics = getOrCreateMetrics(finishedArrayPath);
 
@@ -495,7 +571,7 @@ public class JsonSchemaAnalyzer {
             Set<String> before = isTraceActive() ? Set.copyOf(metrics.getAnomalies()) : null;
 
             // Декларативно делегируем анализ выделенной стратегии
-            ArrayContext context = new ArrayContext(finishedArrayPath, elements, allStrings, allNumbers);
+            ArrayContext context = new ArrayContext(finishedArrayPath, elements, totalElements, allStrings, allNumbers);
             anomalyDetector.detect(context, metrics);
 
             // Каждая новая аномалия получает свой trace scope; id-поле может идти в документе
@@ -507,6 +583,55 @@ public class JsonSchemaAnalyzer {
                     }
                 }
             }
+        }
+    }
+
+    /** Вершина стека — имя ключа (значение лежит по ключу объекта), а не корень {@code $} и не элемент массива. */
+    private boolean isKeyedValue(Deque<String> pathStack) {
+        return !pathStack.isEmpty() && !pathStack.peek().equals("$") && !pathStack.peek().endsWith("[*]");
+    }
+
+    /** Учитывает значение, являющееся прямым элементом текущего массива (любого типа, включая объект и null). */
+    private void countArrayElement(Deque<String> pathStack) {
+        if (isInsideArray(pathStack) && !arrayCountStack.isEmpty()) {
+            arrayCountStack.peek()[0]++;
+        }
+    }
+
+    /**
+     * Решает форму ожидающего объекта по первому ключу: имя на {@code $} — BSON-обёртка (формы объекта нет),
+     * иначе фиксируется {@code OBJECT}/{@code JSON_OBJECT}. {@code firstKey == null} — пустой объект.
+     */
+    private void resolvePendingObject(String firstKey) {
+        if (pendingObjectPath == null) {
+            return;
+        }
+        if (firstKey == null || !firstKey.startsWith("$")) {
+            recordType(pendingObjectPath, pendingObjectType);
+        }
+        pendingObjectPath = null;
+        pendingObjectType = null;
+    }
+
+    /**
+     * Текст — целиком валидный JSON-объект или массив: один корневой контейнер, без хвоста (jsonstring).
+     * Отсекает строки, лишь похожие на JSON ({@code [TEST]}, {@code {abc}}, {@code [1,}).
+     */
+    private static boolean isJsonContainer(String text) {
+        if (text == null || text.length() < 2) {
+            return false;
+        }
+        boolean braces = text.startsWith("{") && text.endsWith("}");
+        boolean brackets = text.startsWith("[") && text.endsWith("]");
+        if (!braces && !brackets) {
+            return false;
+        }
+        try (JsonParser probe = FACTORY.createParser(text)) {
+            probe.nextToken();
+            probe.skipChildren();
+            return probe.nextToken() == null;
+        } catch (java.io.IOException e) {
+            return false; // невалидный текст — результат проверки, а не сбой: обрабатывается как обычная строка
         }
     }
 
@@ -600,7 +725,7 @@ public class JsonSchemaAnalyzer {
     }
 
     /**
-     * Декларативная сборка итогового rx-data (контракт 2.0) через Jackson ObjectNode.
+     * Декларативная сборка итогового rx-data (контракт 3.0) через Jackson ObjectNode.
      * Пути записываются в лексикографическом порядке; на пути — {@code type}, {@code max_length},
      * {@code observed_formats?}, {@code anomalies?} ({@code {detected, trace?}}), {@code path_trace?}.
      * Trace {@code is_polymorphic_format} собирается из trace форматов: элементы несут поле {@code format}.
@@ -629,8 +754,19 @@ public class JsonSchemaAnalyzer {
         rootNode.put(FIELD_SCHEMA_VERSION, CoreSettings.getSchemaVersion());
 
         new TreeMap<>(schemaMap).forEach((path, metrics) -> {
+            Set<String> forms = structureForms(path);
+            // Чистый объект собственной записи не имеет: запись нужна, только если форма поля неоднородна
+            if (!internal && isPureObject(metrics) && forms.size() < 2) {
+                return;
+            }
             ObjectNode metricsNode = rootNode.putObject(path);
-            metricsNode.put(FIELD_TYPE, metrics.getFinalType());
+            if (internal) {
+                // Состояние несёт набор типов целиком: свёрнутый type терял бы форму при слиянии воркеров
+                ArrayNode typesNode = metricsNode.putArray(FIELD_TYPES);
+                metrics.getTypes().forEach(typesNode::add);
+            } else {
+                metricsNode.put(FIELD_TYPE, metrics.getFinalType());
+            }
             metricsNode.put(FIELD_MAX_LENGTH, metrics.getMaxLength());
 
             if (!metrics.getFormats().isEmpty()) {
@@ -639,39 +775,69 @@ public class JsonSchemaAnalyzer {
             }
 
             TreeSet<String> names = new TreeSet<>(metrics.getAnomalies());
-            if (!internal && metrics.isPolymorphicFormat()) {
-                names.add(PathMetrics.ANOMALY_POLYMORPHIC_FORMAT);
+            if (!internal) {
+                if (metrics.isPolymorphicFormat()) {
+                    names.add(PathMetrics.ANOMALY_POLYMORPHIC_FORMAT);
+                }
+                if (metrics.isJsonString()) {
+                    names.add(PathMetrics.ANOMALY_JSON_STRING);
+                }
+                if (metrics.hasNonJsonStrings()) {
+                    names.add(PathMetrics.ANOMALY_NON_JSON_STRINGS);
+                }
+                if (forms.size() >= 2) {
+                    names.add(PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE);
+                }
             }
             if (!names.isEmpty()) {
                 ObjectNode anomaliesNode = metricsNode.putObject(FIELD_ANOMALIES);
                 for (String name : names) {
                     ObjectNode anomalyNode = anomaliesNode.putObject(name);
                     anomalyNode.put(FIELD_DETECTED, true);
-                    if (PathMetrics.ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
-                        ArrayNode traceNode = MAPPER.createArrayNode();
-                        metrics.getFormatTrace().forEach((format, evidence) ->
-                                writeTrace(traceNode, evidence, format));
-                        if (!traceNode.isEmpty()) {
-                            anomalyNode.set(FIELD_TRACE, traceNode);
+                    switch (name) {
+                        case PathMetrics.ANOMALY_POLYMORPHIC_FORMAT -> {
+                            ArrayNode traceNode = MAPPER.createArrayNode();
+                            metrics.getFormatTrace().forEach((format, evidence) ->
+                                    writeTrace(traceNode, evidence, format, null));
+                            if (!traceNode.isEmpty()) {
+                                anomalyNode.set(FIELD_TRACE, traceNode);
+                            }
                         }
-                    } else {
-                        TraceEvidence evidence = metrics.getAnomalyTrace().get(name);
-                        if (evidence != null && !evidence.isEmpty()) {
-                            writeTrace(anomalyNode.putArray(FIELD_TRACE), evidence, null);
+                        case PathMetrics.ANOMALY_POLYMORPHIC_STRUCTURE -> {
+                            ArrayNode traceNode = MAPPER.createArrayNode();
+                            for (String form : forms) {
+                                TraceEvidence evidence = formEvidence(path, metrics, form);
+                                if (evidence != null) {
+                                    writeTrace(traceNode, evidence, null, form);
+                                }
+                            }
+                            if (!traceNode.isEmpty()) {
+                                anomalyNode.set(FIELD_TRACE, traceNode);
+                            }
                         }
+                        case PathMetrics.ANOMALY_JSON_STRING ->
+                                writeTraceIfAny(anomalyNode, metrics.getTypeTrace().get(PathMetrics.TYPE_JSON_STRING));
+                        case PathMetrics.ANOMALY_NON_JSON_STRINGS ->
+                                writeTraceIfAny(anomalyNode, metrics.getTypeTrace().get(PathMetrics.TYPE_VARCHAR));
+                        default -> writeTraceIfAny(anomalyNode, metrics.getAnomalyTrace().get(name));
                     }
                 }
             }
 
             TraceEvidence pathTrace = metrics.getPathTrace();
             if (pathTrace != null && !pathTrace.isEmpty()) {
-                writeTrace(metricsNode.putArray(FIELD_PATH_TRACE), pathTrace, null);
+                writeTrace(metricsNode.putArray(FIELD_PATH_TRACE), pathTrace, null, null);
             }
 
             if (internal && !metrics.getFormatTrace().isEmpty()) {
                 ObjectNode formatTraceNode = metricsNode.putObject(FIELD_FORMAT_TRACE);
                 metrics.getFormatTrace().forEach((format, evidence) ->
-                        writeTrace(formatTraceNode.putArray(format.name()), evidence, null));
+                        writeTrace(formatTraceNode.putArray(format.name()), evidence, null, null));
+            }
+            if (internal && !metrics.getTypeTrace().isEmpty()) {
+                ObjectNode typeTraceNode = metricsNode.putObject(FIELD_TYPE_TRACE);
+                metrics.getTypeTrace().forEach((type, evidence) ->
+                        writeTrace(typeTraceNode.putArray(type), evidence, null, null));
             }
         });
 
@@ -684,14 +850,75 @@ public class JsonSchemaAnalyzer {
         }
     }
 
-    /** Дописывает пары evidence в массив trace; {@code format} (если не {@code null}) — поле каждого элемента. */
-    private static void writeTrace(ArrayNode target, TraceEvidence evidence, ValueFormat format) {
+    /** Дописывает пары evidence в массив trace; {@code format}/{@code form} (если не {@code null}) — поле каждого элемента. */
+    private static void writeTrace(ArrayNode target, TraceEvidence evidence, ValueFormat format, String form) {
         for (TraceEvidence.Pair pair : evidence.items()) {
             ObjectNode item = target.addObject();
             item.put(FIELD_ID, pair.id());
             item.put(FIELD_ID_KEY, pair.idKey());
             if (format != null) {
                 item.put(FIELD_FORMAT, format.name());
+            }
+            if (form != null) {
+                item.put(FIELD_FORM, form);
+            }
+        }
+    }
+
+    private static void writeTraceIfAny(ObjectNode anomalyNode, TraceEvidence evidence) {
+        if (evidence != null && !evidence.isEmpty()) {
+            writeTrace(anomalyNode.putArray(FIELD_TRACE), evidence, null, null);
+        }
+    }
+
+    /** Путь только с типом {@code OBJECT}: чистый объект (собственной записи в отчёте нет). */
+    private static boolean isPureObject(PathMetrics metrics) {
+        return metrics.getTypes().equals(Set.of(PathMetrics.TYPE_OBJECT));
+    }
+
+    /**
+     * Формы пути {@code path} (контракт rx-data 3.0, раздел 2b), вычисляются по слитому состоянию: {@code SCALAR},
+     * {@code OBJECT}, {@code JSON_OBJECT} — по набору типов пути, {@code ARRAY} — по наличию записи {@code path[*]}.
+     * Для путей-массивов ({@code …[*]}) форм нет.
+     *
+     * @param path путь без суффикса {@code [*]}
+     * @return формы в алфавитном порядке; неоднородное поле — две и более
+     */
+    Set<String> structureForms(String path) {
+        Set<String> forms = new TreeSet<>();
+        PathMetrics metrics = schemaMap.get(path);
+        if (metrics == null || path.endsWith("[*]")) {
+            return forms;
+        }
+        if (metrics.hasScalar()) forms.add("SCALAR");
+        if (metrics.getTypes().contains(PathMetrics.TYPE_OBJECT)) forms.add("OBJECT");
+        if (metrics.getTypes().contains(PathMetrics.TYPE_JSON_OBJECT)) forms.add("JSON_OBJECT");
+        if (schemaMap.containsKey(path + "[*]")) forms.add("ARRAY");
+        return forms;
+    }
+
+    /** Первые документы, давшие форму пути (trace {@code is_polymorphic_structure}); {@code null} — trace не собирался. */
+    private TraceEvidence formEvidence(String path, PathMetrics metrics, String form) {
+        switch (form) {
+            case "ARRAY" -> {
+                return schemaMap.get(path + "[*]").getTypeTrace().get(PathMetrics.TYPE_ARRAY);
+            }
+            case "OBJECT" -> {
+                return metrics.getTypeTrace().get(PathMetrics.TYPE_OBJECT);
+            }
+            case "JSON_OBJECT" -> {
+                return metrics.getTypeTrace().get(PathMetrics.TYPE_JSON_OBJECT);
+            }
+            default -> {
+                TraceEvidence merged = null;
+                for (String type : PathMetrics.SCALAR_TYPES) {
+                    TraceEvidence evidence = metrics.getTypeTrace().get(type);
+                    if (evidence != null) {
+                        if (merged == null) merged = new TraceEvidence();
+                        merged.merge(evidence);
+                    }
+                }
+                return merged;
             }
         }
     }
@@ -703,8 +930,8 @@ public class JsonSchemaAnalyzer {
      * Путь со служебным полем или форматом вне whitelist (состояние от воркера другой версии плагина)
      * пропускается целиком, остальные пути сохраняются; невалидный JSON даёт пустое состояние
      * воркера. Каждый пропуск — {@code WARNING} в логе сервера Trino с путём и причиной.
-     * Ключи-пути ({@code $.x}, {@code $.x[*].y}) — данные и не проверяются: полиморфизм
-     * бизнес-объектов сюда не относится.</p>
+     * Ключи-пути ({@code $.x}, {@code $.x[*].y}) — данные и не проверяются; набор типов пути проверяется
+     * по {@link PathMetrics#KNOWN_TYPES}.</p>
      *
      * @param serializedData JSON состояния
      * @return анализатор с восстановленной (возможно, частично) картой путей
@@ -746,7 +973,11 @@ public class JsonSchemaAnalyzer {
             Map.Entry<String, JsonNode> field = fields.next();
             JsonNode value = field.getValue();
             switch (field.getKey()) {
-                case FIELD_TYPE -> metrics.addType(value.asText());
+                case FIELD_TYPES -> {
+                    for (JsonNode t : value) {
+                        metrics.addType(parseType(t.asText()));
+                    }
+                }
                 case FIELD_MAX_LENGTH -> metrics.updateLength(value.asLong());
                 case FIELD_OBSERVED_FORMATS -> {
                     for (JsonNode f : value) {
@@ -755,8 +986,8 @@ public class JsonSchemaAnalyzer {
                 }
                 case FIELD_ANOMALIES -> value.fields().forEachRemaining(a -> {
                     String name = a.getKey();
-                    if (PathMetrics.ANOMALY_POLYMORPHIC_FORMAT.equals(name)) {
-                        return; // вычисляется из форматов
+                    if (COMPUTED_ANOMALIES.contains(name)) {
+                        return; // вычисляется при сборке отчёта
                     }
                     metrics.markAnomaly(name);
                     JsonNode trace = a.getValue().get(FIELD_TRACE);
@@ -777,10 +1008,23 @@ public class JsonSchemaAnalyzer {
                         metrics.addFormatTrace(format, item.get(FIELD_ID).asText(), item.get(FIELD_ID_KEY).asText());
                     }
                 });
+                case FIELD_TYPE_TRACE -> value.fields().forEachRemaining(t -> {
+                    String type = parseType(t.getKey());
+                    for (JsonNode item : t.getValue()) {
+                        metrics.addTypeTrace(type, item.get(FIELD_ID).asText(), item.get(FIELD_ID_KEY).asText());
+                    }
+                });
                 default -> throw new IllegalStateException("служебное поле вне whitelist: " + field.getKey());
             }
         }
         return metrics;
+    }
+
+    private static String parseType(String name) {
+        if (!PathMetrics.KNOWN_TYPES.contains(name)) {
+            throw new IllegalStateException("неизвестный тип: " + name);
+        }
+        return name;
     }
 
     private static ValueFormat parseFormat(String name) {

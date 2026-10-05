@@ -18,6 +18,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Properties;
 import java.util.Map;
 import java.util.Set;
@@ -81,6 +82,51 @@ public class RxDataSchemaTest {
 
         Set<ValidationMessage> errors = validate(report);
         assertTrue(errors.isEmpty(), "rx-data trace-режима не соответствует контракту: " + errors);
+    }
+
+    @Test
+    public void testRxDataValidForStructureScenarios() throws Exception {
+        ForgottenMigrationsSource source = new ForgottenMigrationsSource();
+        for (AnomalyScenario scenario : AnomalyScenario.values()) {
+            if (!scenario.name().startsWith("OBJ_")) {
+                continue;
+            }
+            // Обычный и trace-режим: trace is_polymorphic_structure несёт form
+            for (boolean trace : new boolean[]{false, true}) {
+                JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+                for (int i = 0; i < 8; i++) {
+                    byte[] json = ChaosDataGenerator.generateSingleLine(source, scenario, i).getBytes();
+                    if (trace) {
+                        analyzer.analyze(new ByteArrayInputStream(json), Slices.utf8Slice(""));
+                    } else {
+                        analyzer.analyze(new ByteArrayInputStream(json));
+                    }
+                }
+                String report = analyzer.buildJsonReport();
+                Set<ValidationMessage> errors = validate(report);
+                assertTrue(errors.isEmpty(), scenario + (trace ? " (trace)" : "") + ": rx-data не соответствует контракту 3.0: " + errors);
+                if (trace && report.contains("is_polymorphic_structure")) {
+                    assertTrue(report.contains("\"form\":"), scenario + ": trace неоднородности без form: " + report);
+                }
+            }
+        }
+    }
+
+    @Test
+    public void testSchemaRejectsUnknownForm() throws Exception {
+        String ok = "{\"schema_version\":\"3.0\",\"$.x\":{\"type\":\"OBJECT\",\"max_length\":0,\"anomalies\":"
+                + "{\"is_polymorphic_structure\":{\"detected\":true,\"trace\":[{\"id\":\"1\",\"id_key\":\"id\",\"form\":\"ARRAY\"}]}}}}";
+        assertTrue(validate(ok).isEmpty(), validate(ok).toString());
+        assertFalse(validate(ok.replace("\"ARRAY\"", "\"MAP\"")).isEmpty(), "form вне enum контракта");
+    }
+
+    @Test
+    public void testSchemaRejectsUnknownTypeAndOldMajor() throws Exception {
+        assertTrue(validate("{\"schema_version\":\"3.0\",\"$.x\":{\"type\":\"OBJECT\",\"max_length\":0}}").isEmpty());
+        assertFalse(validate("{\"schema_version\":\"3.0\",\"$.x\":{\"type\":\"MAP\",\"max_length\":0}}").isEmpty(),
+                "тип вне enum контракта");
+        assertFalse(validate("{\"schema_version\":\"2.0\",\"$.x\":{\"type\":\"VARCHAR\",\"max_length\":0}}").isEmpty(),
+                "major 2 схемой 3.0 не принимается");
     }
 
     @Test

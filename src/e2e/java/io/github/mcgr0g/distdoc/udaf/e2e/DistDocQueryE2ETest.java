@@ -78,7 +78,7 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
     public void anomalyFlagsPresent() {
         String rx = (String) computeActual("SELECT analyze_json_schema(line) FROM crm_combined").getOnlyValue();
 
-        // Фикстуры ALL содержат все аномалии; в контракте 2.0 — объекты внутри anomalies
+        // Фикстуры ALL содержат все аномалии; в контракте 3.0 — объекты внутри anomalies
         JsonNode root = readTree(rx);
         assertTrue(root.at("/$.birth_date[*]/anomalies/is_date_part_array/detected").asBoolean(), "нет is_date_part_array: " + rx);
         assertTrue(root.at("/$.payment_dates[*]/anomalies/is_array_empty/detected").asBoolean(), "нет is_array_empty: " + rx);
@@ -89,6 +89,30 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
                 createdAt.get("observed_formats").toString(), "observed_formats: " + rx);
         assertTrue(createdAt.at("/anomalies/is_polymorphic_format/detected").asBoolean(), "нет is_polymorphic_format: " + rx);
         assertFalse(root.get("$.customer_rating").has("observed_formats"), "ложный формат на customer_rating: " + rx);
+    }
+
+    @Test
+    public void structurePolymorphismAndJsonStringPresent() {
+        String rx = (String) computeActual("SELECT analyze_json_schema(line) FROM crm_combined").getOnlyValue();
+        JsonNode root = readTree(rx);
+
+        // Чистые объекты записей не имеют; BSON-обёртка — лист
+        assertTrue(root.at("/$._id").isMissingNode() && root.at("/$.doc_meta").isMissingNode(), "запись чистого объекта: " + rx);
+        assertTrue(root.has("$._id.$oid"), "нет листа $._id.$oid: " + rx);
+        assertTrue(root.at("/$.metadata_encoded/anomalies/is_json_string/detected").asBoolean(), "нет is_json_string: " + rx);
+
+        // counterparties: i%3==0 — массив объектов, иначе объект → неоднородное поле, ветки независимы
+        assertEquals("OBJECT", root.at("/$.counterparties/type").asText(), "нет записи неоднородного поля: " + rx);
+        assertTrue(root.at("/$.counterparties/anomalies/is_polymorphic_structure/detected").asBoolean(), "нет флага: " + rx);
+        assertEquals("VARCHAR", root.at("/$.counterparties.name/type").asText());
+        assertEquals("ARRAY", root.at("/$.counterparties[*]/type").asText(), "нет массивной ветки: " + rx);
+        assertEquals("INTEGER", root.at("/$.counterparties[*].share/type").asText());
+        assertTrue(root.at("/$.counterparties[*]/anomalies").isMissingNode(), "массив объектов не пуст: " + rx);
+        assertTrue(root.at("/$.counterparties.share").isMissingNode() && root.at("/$.counterparties[*].name").isMissingNode(),
+                "ветки пересеклись: " + rx);
+
+        // birth_date: скаляр в чётных строках, массив частиц в нечётных
+        assertTrue(root.at("/$.birth_date/anomalies/is_polymorphic_structure/detected").asBoolean(), "нет флага у birth_date: " + rx);
     }
 
     private static JsonNode readTree(String rx) {

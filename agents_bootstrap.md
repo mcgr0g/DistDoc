@@ -3,7 +3,7 @@
 Карта проекта для людей и агентов. Читать при входе в незнакомую область; правила работы — в agents.md.
 
 ## Суть DistDoc
-DistDoc — UDAF-плагин Trino (481+) для послойной интроспекции полиморфного JSON за один проход: O(1) память на строку, без DOM. Результат — rx-data (`.rx.json`) (docs/contracts/rx-data-contract.md). Второй компонент — Python-генератор dbt-моделей (код вне этого репозитория, регламент в local/generator/).
+DistDoc — UDAF-плагин Trino (481+; релизные архивы — 481/482/483) для послойной интроспекции полиморфного JSON за один проход: O(1) память на строку, без DOM. Результат — rx-data (`.rx.json`) (docs/contracts/rx-data-contract.md). Второй компонент — Python-генератор dbt-моделей (код вне этого репозитория, регламент в local/generator/).
 
 ## C4 L1 (System Context)
 
@@ -62,12 +62,14 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 | docs/testing/tracing.md | трассировка идентификаторов (`path_trace`, `anomalies[name].trace`, пары `{id, id_key}`, merge, режимы, конфиг) | при работе с trace-режимом UDAF |
 | docs/testing/prod-access.md | прод-доступ (заглушка) | при работе с продом |
 | docs/guides/demo.md | сценарий демонстрации | при подготовке демо |
+| docs/releasing/release-candidates.md | публикация релиза и rc: воркфлоу, команды gh, ручные операции, грабли | при выпуске релиза или rc |
 | local/generator/README.md | карта документации генератора | при работе над вторым компонентом |
 | local/steps.md | протокол памяти | перед каждым новым шагом |
 
 ## Карта команд mise
 Точный список задач из mise.toml:
 
+- `./gradlew release` — релизные архивы и SHA256SUMS в `build/libs/release` (по одной версии Trino; публикация — CI, docs/testing/reliability-matrix.md);
 - `mise run composeEnv` — генерация `build/compose/versions.env` из gradle.properties (TRINO_VERSION, DISTDOC_VERSION, UID, GID);
 - `mise run build` — инкрементальная сборка fat-jars (плагин + фикстуры) в build/libs/;
 - `mise run test` — JUnit: `./gradlew cleanTest test --info`;
@@ -99,11 +101,12 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 - `version.$numberLong` — BSON-служебный слог в пути;
 - `doc_meta.@type`/`doc_meta.@version` — @-слоги в пути.
 
-14 таблиц `fixtures.toml`, префикс = ось проверки (ожидания — docs/testing/fixture-matrix.md, исполняются `FixtureMatrixTest`):
+25 таблиц `fixtures.toml`, префикс = ось проверки (ожидания — docs/testing/fixture-matrix.md, исполняются `FixtureMatrixTest`):
 - `crm_combined` (all), `clean` (clean);
 - `fmt_created_at_local`, `fmt_updated_at_offset`, `fmt_promo_expiry_date` (clean), `fmt_created_at_unix_millis` (date_at_unix), `fmt_created_at_date_only` (date_as_plain), `fmt_customer_rating_promotion` (rating_promotion);
 - `arr_birth_date_parts` (date_as_array), `arr_payment_dates_empty` (empty_array);
 - `pol_created_at_formats`, `pol_created_at_with_arrays`, `pol_created_at_with_rating` (режим = имя таблицы);
+- `obj_nested_plain`, `obj_array_of_objects`, `obj_object_or_array`, `obj_object_or_scalar`, `obj_object_or_array_formats`, `obj_json_object_or_array`, `obj_json_array_elements`, `obj_json_with_plain`, `obj_json_with_native_object`, `obj_json_false_alarm`, `obj_bson_id_forms` (структура, JSON-строки, BSON-обёртки; режим = имя таблицы);
 - `trace_mixed_sources` (id-источник по `i%4`: `_id.$oid` / `id` / `order_id` / нет).
 Группы строк внутри режима — только по `index`, без random.
 

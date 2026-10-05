@@ -4,7 +4,7 @@
 - Все создаваемые артефакты (документы, заметки, комментарии) — русский, как существующая документация.
 
 ## Стек
-- Java 25 (toolchain в build.gradle), Gradle wrapper 9.3.0, mise (tools: gradle 9.6.0, java temurin-25, jaq), Trino 481 (trinoVersion), distdocVersion 2.0.0 — оба в gradle.properties.
+- Java 25 (toolchain в build.gradle), Gradle wrapper 9.3.0, mise (tools: gradle 9.6.0, java temurin-25, jaq), Trino 483 (trinoVersion), distdocVersion 3.0.0 — оба в gradle.properties.
 - Сборка только через mise run … (см. agents_bootstrap.md); прямой ./gradlew — по необходимости.
 
 ## Верификация сборки
@@ -33,7 +33,7 @@
 
 ## Структура документации
 - Карта проекта: agents_bootstrap.md (читать при входе в незнакомую область).
-- Частицы плагина: docs/ (contracts/, adr/, patterns/, testing/, guides/).
+- Частицы плагина: docs/ (contracts/, adr/, patterns/, testing/, guides/, releasing/).
 - Документация генератора: local/generator/ (вне git, стиль тот же).
 - local/ — вне git (служебный каталог проекта).
 - ADR читать в последнюю очередь: сначала актуальные документы (contracts/, patterns/, testing/),

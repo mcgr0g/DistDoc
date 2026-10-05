@@ -1,4 +1,4 @@
-name: Reliability Matrix
+name: Reliability Matrix & Release
 
 on:
   push:
@@ -6,8 +6,20 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      # Пометка релиза. Влияет только на job publish — на push из main значения нет (inputs
+      # у push пуст), поэтому читаем через "${PRERELEASE:-}" и дефолтим в «стабильный».
+      prerelease:
+        description: "Пометить релиз как rc (prerelease)"
+        type: boolean
+        default: false
+
+# По умолчанию только чтение; право на запись релиза выдаётся точечно job-у publish
+permissions:
+  contents: read
 
 jobs:
+  # 1. Матрица версий Trino: unit + e2e in-process (без Docker)
   matrix-test:
     name: Test Trino ${{ matrix.trino-version }}
     runs-on: ubuntu-latest
@@ -45,10 +57,16 @@ jobs:
             build/reports/tests/
           retention-days: 7
 
+  # 2. Install-smoke: загрузка плагина PluginManager-ом реального образа Trino (Docker),
+  #    по одному разу на каждую версию матрицы — проверяется совместимость с каждой версией до публикации
   install-smoke:
-    name: Install Smoke Test (Trino 483)
+    name: Install Smoke Test (Trino ${{ matrix.trino-version }})
     runs-on: ubuntu-latest
     needs: matrix-test
+    strategy:
+      fail-fast: false
+      matrix:
+        trino-version: [481, 482, 483]
 
     steps:
       - uses: actions/checkout@v4
@@ -63,8 +81,118 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build plugin
-        run: ./gradlew build -PtrinoVersion=483
-
       - name: Run install-smoke test
-        run: ./gradlew installSmokeTest -PtrinoVersion=483
+        # installSmokeTest сам собирает плагин (deployPlugin → jar + runtime-зависимости в build/libs/dist)
+        run: ./gradlew installSmokeTest -PtrinoVersion=${{ matrix.trino-version }}
+
+      - name: Upload smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-smoke-${{ matrix.trino-version }}
+          path: |
+            build/test-results/
+            build/reports/tests/
+          retention-days: 7
+
+  # 3. Публикация релиза: только push/merge в main (или ручной запуск), и только если прошли все проверки.
+  #    Тег — v<distdocVersion> (major.minor = версия схемы rx-data), ассеты: N zip (по числу версий Trino),
+  #    один distdoc-schema-<X.Y>.json и SHA256SUMS.
+  #    Ручной запуск допускается с любой ветки (так публикуются rc); номер версии при этом берётся
+  #    из gradle.properties выбранной ветки — см. docs/releasing/release-candidates.md
+  #    (в частности: тег должен не существовать, иначе --clobber затрёт ассеты другой сборки).
+  #    Пометка prerelease приходит из инпута выше.
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: install-smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "25"
+          cache: "gradle"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Read versions
+        id: ver
+        run: |
+          VERSION=$(grep '^distdocVersion=' gradle.properties | cut -d= -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "schema=distdoc-schema-${VERSION%.*}.json" >> "$GITHUB_OUTPUT"
+
+      - name: Build release archives per Trino version
+        run: |
+          for v in 481 482 483; do
+            ./gradlew releaseZip -PtrinoVersion=$v
+          done
+          # Суммы считаются по всем собранным архивам сразу; версия Trino здесь не важна
+          ./gradlew releaseChecksums -PtrinoVersion=483
+
+      - name: Attach schema
+        run: cp docs/contracts/rx-data.schema.json "build/libs/release/${{ steps.ver.outputs.schema }}"
+
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Через env, а не инлайном: иначе значение уходит в текст скрипта и грозит инъекцией.
+          # Только inputs (типизированный boolean), не github.event.inputs — у того всегда строка,
+          # и "false" оказалось бы истиной.
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          DIR=build/libs/release
+          # Пометку ставит только create: у существующего релиза --clobber её не меняет
+          # (перезапуск того же тега сохранит прежнюю). Поправить вручную — gh release edit,
+          # см. docs/releasing/release-candidates.md
+          FLAGS=()
+          if [ "${PRERELEASE:-}" = "true" ]; then FLAGS+=(--prerelease); fi
+          cat > "$DIR/NOTES.md" <<'NOTES'
+          Плагин DistDoc (UDAF `analyze_json_schema`) для Trino: послойная интроспекция полиморфного JSON
+          за один проход, результат — rx-data (`.rx.json`).
+
+          Ассеты:
+
+          - `trino-<версия Trino>-distdoc-<версия DistDoc>.zip` — каталог плагина (`distdoc/`: тонкий jar
+            и runtime-зависимости) плюс каталог `contract/` с контрактом rx-data. Один архив на каждую
+            версию Trino из reliability matrix.
+          - `distdoc-schema-<X.Y>.json` — машиночитаемая схема rx-data (не зависит от версии Trino).
+          - `SHA256SUMS` — контрольные суммы всех архивов и схемы.
+
+          Установка: распаковать zip в каталог плагинов Trino (получится `plugin/distdoc/` с тонким
+          jar и runtime-зависимостями), перезапустить Trino. Каталог-файл (например
+          `catalog/distdoc.properties`) не нужен: DistDoc — плагин с UDAF, а не коннектор.
+          `DistDocPlugin` подхватывается PluginManager-ом по `META-INF/services/io.trino.spi.Plugin`,
+          и `analyze_json_schema` становится доступна глобально — в любом каталоге и схеме.
+          Настройки плагина (`app-config.toml`) уже внутри jar; переопределяются переменными
+          окружения процесса Trino (`DISTDOC_TRACE_PRESET`, `DISTDOC_TRACE_SUFFIX`), а не файлами Trino.
+
+          Версия схемы rx-data — major.minor от версии DistDoc; потребитель обязан сверять её
+          и отвергать несовместимый major.
+          NOTES
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DIR"/*.zip "$DIR/${{ steps.ver.outputs.schema }}" "$DIR/SHA256SUMS" --clobber
+          else
+            # ${FLAGS[@]+...} — идиома на случай пустого массива под set -u (bash < 4.4)
+            gh release create "$TAG" "$DIR"/*.zip "$DIR/${{ steps.ver.outputs.schema }}" "$DIR/SHA256SUMS" \
+              --title "DistDoc ${{ steps.ver.outputs.version }}" \
+              --notes-file "$DIR/NOTES.md" \
+              --target "${{ github.sha }}" \
+              ${FLAGS[@]+"${FLAGS[@]}"}
+          fi
