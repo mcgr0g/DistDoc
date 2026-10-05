@@ -16,8 +16,10 @@ bin/
 .settings/
 *.iml
 .vscode/
-# Скрэтч OMP
+# agents
 .agent-tmp/
+.claude
+.omp
 # macOS
 .DS_Store
 # Сырые дампы ShadowDoc (каталог трекается через .gitkeep)

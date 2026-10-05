@@ -3,7 +3,7 @@
 Карта проекта для людей и агентов. Читать при входе в незнакомую область; правила работы — в agents.md.
 
 ## Суть DistDoc
-DistDoc — UDAF-плагин Trino (481+) для послойной интроспекции полиморфного JSON за один проход: O(1) память на строку, без DOM. Результат — rx-data (`.rx.json`) (docs/contracts/rx-data-contract.md). Второй компонент — Python-генератор dbt-моделей (код вне этого репозитория, регламент в local/generator/).
+DistDoc — UDAF-плагин Trino (481+; релизные архивы — 481/482/483) для послойной интроспекции полиморфного JSON за один проход: O(1) память на строку, без DOM. Результат — rx-data (`.rx.json`) (docs/contracts/rx-data-contract.md). Второй компонент — Python-генератор dbt-моделей (код вне этого репозитория, регламент в local/generator/).
 
 ## C4 L1 (System Context)
 
@@ -62,12 +62,14 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 | docs/testing/tracing.md | трассировка идентификаторов (`path_trace`, `anomalies[name].trace`, пары `{id, id_key}`, merge, режимы, конфиг) | при работе с trace-режимом UDAF |
 | docs/testing/prod-access.md | прод-доступ (заглушка) | при работе с продом |
 | docs/guides/demo.md | сценарий демонстрации | при подготовке демо |
+| docs/releasing/release-candidates.md | публикация релиза и rc: воркфлоу, команды gh, ручные операции, грабли | при выпуске релиза или rc |
 | local/generator/README.md | карта документации генератора | при работе над вторым компонентом |
 | local/steps.md | протокол памяти | перед каждым новым шагом |
 
 ## Карта команд mise
 Точный список задач из mise.toml:
 
+- `./gradlew release` — релизные архивы и SHA256SUMS в `build/libs/release` (по одной версии Trino; публикация — CI, docs/testing/reliability-matrix.md);
 - `mise run composeEnv` — генерация `build/compose/versions.env` из gradle.properties (TRINO_VERSION, DISTDOC_VERSION, UID, GID);
 - `mise run build` — инкрементальная сборка fat-jars (плагин + фикстуры) в build/libs/;
 - `mise run test` — JUnit: `./gradlew cleanTest test --info`;

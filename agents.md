@@ -33,7 +33,7 @@
 
 ## Структура документации
 - Карта проекта: agents_bootstrap.md (читать при входе в незнакомую область).
-- Частицы плагина: docs/ (contracts/, adr/, patterns/, testing/, guides/).
+- Частицы плагина: docs/ (contracts/, adr/, patterns/, testing/, guides/, releasing/).
 - Документация генератора: local/generator/ (вне git, стиль тот же).
 - local/ — вне git (служебный каталог проекта).
 - ADR читать в последнюю очередь: сначала актуальные документы (contracts/, patterns/, testing/),
