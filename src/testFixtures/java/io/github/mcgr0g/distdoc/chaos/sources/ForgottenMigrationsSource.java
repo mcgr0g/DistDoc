@@ -15,6 +15,9 @@ public class ForgottenMigrationsSource implements ChaosSource {
     // Написания created_at (docs/contracts/value-formats.md); базовая запись — LOCAL_DATETIME
     private static final String CREATED_AT_DATE_ONLY = "2026-07-23";
     private static final String CREATED_AT_OFFSET = "2026-07-23T01:15:00+03:00";
+    // JSON-строки (obj_json_*): экранированный JSON внутри строкового значения
+    private static final String JSON_OBJECT_TEXT = "{\"u\":\"a\"}";
+    private static final String JSON_ARRAY_TEXT = "[{\"k\":1}]";
     private static final long CREATED_AT_UNIX_MILLIS = 1784769300000L; // 2026-07-23T01:15:00Z
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -88,6 +91,23 @@ public class ForgottenMigrationsSource implements ChaosSource {
                 if (index % 2 == 1) doubleRating(baseRecord);
             }
             case TRACE_MIXED_SOURCES -> mixedIdSource(baseRecord, index);
+            case OBJ_JSON_OBJECT_OR_ARRAY -> baseRecord.put("meta", index % 2 == 0 ? JSON_OBJECT_TEXT : JSON_ARRAY_TEXT);
+            case OBJ_JSON_ARRAY_ELEMENTS -> baseRecord.putArray("list").add("{\"a\":1}").add("{\"a\":2}");
+            case OBJ_JSON_WITH_PLAIN -> baseRecord.put("meta", jsonOrPlain(index));
+            case OBJ_JSON_WITH_NATIVE_OBJECT -> {
+                if (index % 2 == 0) {
+                    baseRecord.putObject("meta").put("u", "a");
+                } else {
+                    baseRecord.put("meta", JSON_OBJECT_TEXT);
+                }
+            }
+            case OBJ_JSON_FALSE_ALARM -> baseRecord.put("t", index % 2 == 0 ? "[TEST]" : "{abc}");
+            case OBJ_BSON_ID_FORMS -> {
+                if (index % 2 == 1) {
+                    // Та же идентичность, но строкой: рядом с обёрткой {"$oid":…} в других строках
+                    baseRecord.put("_id", baseRecord.get("_id").get("$oid").asText());
+                }
+            }
             case OBJ_NESTED_PLAIN -> nestedProfile(baseRecord);
             case OBJ_ARRAY_OF_OBJECTS -> itemsOfObjects(baseRecord);
             case OBJ_OBJECT_OR_ARRAY -> party(baseRecord, index, false);
@@ -140,6 +160,12 @@ public class ForgottenMigrationsSource implements ChaosSource {
         } else if (group == 2) {
             record.put("order_id", String.format("ord-%010d", index));
         }
+    }
+
+    /** meta по i%4: чётные — JSON-строка, 1 — пустая строка, 3 — обычный текст. */
+    private static String jsonOrPlain(long index) {
+        if (index % 2 == 0) return JSON_OBJECT_TEXT;
+        return index % 4 == 1 ? "" : "n/a";
     }
 
     /** profile: объекты двух уровней и пустой объект (узлы OBJECT без потомков). */

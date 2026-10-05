@@ -140,6 +140,48 @@ count = 60
 type = "obj_object_or_array_formats"
 file = "build/dev-lakehouse/data/obj_object_or_array_formats.jsonl"
 
+[[scenarios]]
+# meta: JSON-строка — объект (i%2==0) или массив (i%2==1) → is_json_string + is_polymorphic_structure (JSON_OBJECT, ARRAY)
+table = "obj_json_object_or_array"
+count = 60
+type = "obj_json_object_or_array"
+file = "build/dev-lakehouse/data/obj_json_object_or_array.jsonl"
+
+[[scenarios]]
+# list: массив JSON-строк → $.list[*] VARCHAR + is_json_string
+table = "obj_json_array_elements"
+count = 60
+type = "obj_json_array_elements"
+file = "build/dev-lakehouse/data/obj_json_array_elements.jsonl"
+
+[[scenarios]]
+# meta: JSON-строка или ""/"n/a" → is_json_string + has_non_json_strings
+table = "obj_json_with_plain"
+count = 60
+type = "obj_json_with_plain"
+file = "build/dev-lakehouse/data/obj_json_with_plain.jsonl"
+
+[[scenarios]]
+# meta: нативный объект или JSON-строка → is_polymorphic_structure (OBJECT, JSON_OBJECT)
+table = "obj_json_with_native_object"
+count = 60
+type = "obj_json_with_native_object"
+file = "build/dev-lakehouse/data/obj_json_with_native_object.jsonl"
+
+[[scenarios]]
+# t: [TEST] / {abc} — не JSON → обычная строка, путей нет
+table = "obj_json_false_alarm"
+count = 60
+type = "obj_json_false_alarm"
+file = "build/dev-lakehouse/data/obj_json_false_alarm.jsonl"
+
+[[scenarios]]
+# _id: BSON-обёртка или строка → листья $._id и $._id.$oid без узла OBJECT
+table = "obj_bson_id_forms"
+count = 60
+type = "obj_bson_id_forms"
+file = "build/dev-lakehouse/data/obj_bson_id_forms.jsonl"
+
 # --- Трассировка (fixture-matrix §3) ---
 
 [[scenarios]]

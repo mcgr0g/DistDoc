@@ -99,12 +99,12 @@ testFixtures: 9 классов генератора хаос-данных (chaos
 - `version.$numberLong` — BSON-служебный слог в пути;
 - `doc_meta.@type`/`doc_meta.@version` — @-слоги в пути.
 
-19 таблиц `fixtures.toml`, префикс = ось проверки (ожидания — docs/testing/fixture-matrix.md, исполняются `FixtureMatrixTest`):
+25 таблиц `fixtures.toml`, префикс = ось проверки (ожидания — docs/testing/fixture-matrix.md, исполняются `FixtureMatrixTest`):
 - `crm_combined` (all), `clean` (clean);
 - `fmt_created_at_local`, `fmt_updated_at_offset`, `fmt_promo_expiry_date` (clean), `fmt_created_at_unix_millis` (date_at_unix), `fmt_created_at_date_only` (date_as_plain), `fmt_customer_rating_promotion` (rating_promotion);
 - `arr_birth_date_parts` (date_as_array), `arr_payment_dates_empty` (empty_array);
 - `pol_created_at_formats`, `pol_created_at_with_arrays`, `pol_created_at_with_rating` (режим = имя таблицы);
-- `obj_nested_plain`, `obj_array_of_objects`, `obj_object_or_array`, `obj_object_or_scalar`, `obj_object_or_array_formats` (структура объектов, режим = имя таблицы);
+- `obj_nested_plain`, `obj_array_of_objects`, `obj_object_or_array`, `obj_object_or_scalar`, `obj_object_or_array_formats`, `obj_json_object_or_array`, `obj_json_array_elements`, `obj_json_with_plain`, `obj_json_with_native_object`, `obj_json_false_alarm`, `obj_bson_id_forms` (структура, JSON-строки, BSON-обёртки; режим = имя таблицы);
 - `trace_mixed_sources` (id-источник по `i%4`: `_id.$oid` / `id` / `order_id` / нет).
 Группы строк внутри режима — только по `index`, без random.
 

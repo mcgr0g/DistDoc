@@ -92,23 +92,27 @@ public class DistDocQueryE2ETest extends AbstractTestQueryFramework {
     }
 
     @Test
-    public void objectNodesAndPolymorphicFieldPresent() {
+    public void structurePolymorphismAndJsonStringPresent() {
         String rx = (String) computeActual("SELECT analyze_json_schema(line) FROM crm_combined").getOnlyValue();
         JsonNode root = readTree(rx);
 
-        // Узлы объектов (контракт 3.0, раздел 2b) и jsonstring
-        assertEquals("OBJECT", root.at("/$._id/type").asText(), "нет узла $._id: " + rx);
-        assertEquals("OBJECT", root.at("/$.doc_meta/type").asText(), "нет узла $.doc_meta: " + rx);
+        // Чистые объекты записей не имеют; BSON-обёртка — лист
+        assertTrue(root.at("/$._id").isMissingNode() && root.at("/$.doc_meta").isMissingNode(), "запись чистого объекта: " + rx);
+        assertTrue(root.has("$._id.$oid"), "нет листа $._id.$oid: " + rx);
         assertTrue(root.at("/$.metadata_encoded/anomalies/is_json_string/detected").asBoolean(), "нет is_json_string: " + rx);
 
-        // counterparties: i%3==0 — массив объектов, иначе объект → две независимые ветки
-        assertEquals("OBJECT", root.at("/$.counterparties/type").asText(), "нет объектной ветки: " + rx);
+        // counterparties: i%3==0 — массив объектов, иначе объект → неоднородное поле, ветки независимы
+        assertEquals("OBJECT", root.at("/$.counterparties/type").asText(), "нет записи неоднородного поля: " + rx);
+        assertTrue(root.at("/$.counterparties/anomalies/is_polymorphic_structure/detected").asBoolean(), "нет флага: " + rx);
         assertEquals("VARCHAR", root.at("/$.counterparties.name/type").asText());
         assertEquals("ARRAY", root.at("/$.counterparties[*]/type").asText(), "нет массивной ветки: " + rx);
         assertEquals("INTEGER", root.at("/$.counterparties[*].share/type").asText());
         assertTrue(root.at("/$.counterparties[*]/anomalies").isMissingNode(), "массив объектов не пуст: " + rx);
         assertTrue(root.at("/$.counterparties.share").isMissingNode() && root.at("/$.counterparties[*].name").isMissingNode(),
                 "ветки пересеклись: " + rx);
+
+        // birth_date: скаляр в чётных строках, массив частиц в нечётных
+        assertTrue(root.at("/$.birth_date/anomalies/is_polymorphic_structure/detected").asBoolean(), "нет флага у birth_date: " + rx);
     }
 
     private static JsonNode readTree(String rx) {

@@ -121,10 +121,11 @@ public class DistDocDistributedE2ETest extends AbstractTestQueryFramework {
         assertTrue(rating != null, "отсутствует $.customer_rating");
         assertEquals("DOUBLE", rating.get("type").asText(), "тип customer_rating должен быть DOUBLE");
 
-        // Узлы объектов и обе ветки полиморфного поля переживают шаффл (контракт 3.0, раздел 2b)
-        assertEquals("OBJECT", root.at("/$.counterparties/type").asText(), "объектная ветка после combine");
+        // Неоднородность и обе ветки поля переживают шаффл (контракт 3.0, раздел 2b): форма — часть состояния воркера
+        assertEquals("OBJECT", root.at("/$.counterparties/type").asText(), "запись неоднородного поля после combine");
+        assertTrue(root.at("/$.counterparties/anomalies/is_polymorphic_structure/detected").asBoolean(), "флаг после combine");
         assertEquals("ARRAY", root.at("/$.counterparties[*]/type").asText(), "массивная ветка после combine");
-        assertEquals("OBJECT", root.at("/$._id/type").asText(), "узел $._id после combine");
+        assertTrue(root.at("/$._id").isMissingNode(), "чистый объект записи не имеет");
 
         // Полиморфизм форматов переживает шаффл: множество форматов — union частичных состояний
         JsonNode createdAt = root.get("$.created_at");

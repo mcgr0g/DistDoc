@@ -1,6 +1,6 @@
 # 0007 Узлы объектов и структурная полиморфность (rx-data 3.0)
 
-Status: accepted
+Status: accepted; решение об узлах `OBJECT` на каждом объекте заменено [0008](0008-polymorphic-structure-flag.md) (остальное действует)
 Date: 2026-10-05
 
 ## Context and Problem Statement

@@ -114,7 +114,7 @@ file = "build/dev-lakehouse/data/pol_created_at_formats.jsonl"
 
 ### Спецификация полей и их назначение:
 
-1.  **`_id.$oid` (VARCHAR)**: вложенный BSON-идентификатор документа MongoDB вместо плоского `tx_id`; отлаживает рекурсивный парсер путей верхнего уровня (`$._id.$oid`). Сам объект `_id` (как `version` и `doc_meta`) даёт в rx-data 3.0 узел `type: "OBJECT"` во всех таблицах.
+1.  **`_id.$oid` (VARCHAR)**: вложенный BSON-идентификатор документа MongoDB вместо плоского `tx_id`; отлаживает рекурсивный парсер путей верхнего уровня (`$._id.$oid`). Сам объект `_id` (как `version` и `doc_meta`) — чистый объект: собственной записи в rx-data 3.0 нет, `$oid` — BSON-обёртка. В `obj_bson_id_forms` `_id` бывает и строкой.
 2.  **`customer_rating` (INTEGER → DOUBLE)**: в чистых сценариях INTEGER (`numberBetween(1,5)`); DOUBLE подмешивают `rating_promotion` и `pol_created_at_with_rating` (нечётные строки) и `all` (`i%5<2`) — числовая решётка ядра поднимает итог до DOUBLE (без потери данных, заметно в git diff); ложных аномалий в схеме не порождает.
 3.  **`payment_dates` (ARRAY)**: Честный массив оплат. Используется строго для детекции пустых массивов (`[]`) или валидных списков ISO-дат `["2026-06-01", "2026-06-02"]`.
 4.  **`birth_date` (VARCHAR / ARRAY)**: Поле-хамелеон со структурным хаосом.
@@ -142,8 +142,14 @@ file = "build/dev-lakehouse/data/pol_created_at_formats.jsonl"
     (`obj_nested_plain`), `items` — массив объектов с вложенным объектом `dims`
     (`obj_array_of_objects`), `contact` — объект или строка `"n/a"` (`obj_object_or_scalar`),
     `signed_at` внутри `party` — формат дат по ветке (`obj_object_or_array_formats`).
-    Отлаживают узлы `type: "OBJECT"`, независимость веток `P` и `P[*]` и разведение `_obj`/`_arr`
-    в генераторе (контракт rx-data 3.0, раздел 2b).
+    Отлаживают аномалию `is_polymorphic_structure` (запись `P` с `type: "OBJECT"` и trace по формам), независимость
+    веток `P` и `P[*]` и разведение `_obj`/`_arr` в генераторе (контракт rx-data 3.0, раздел 2b).
+14. **JSON-строки (`meta`, `list`, `t`, только в `obj_json_*`)**: поле с экранированным JSON — объект или массив
+    (`obj_json_object_or_array`), массив JSON-строк (`obj_json_array_elements`), JSON рядом с обычными строками `""`/`"n/a"`
+    (`obj_json_with_plain`, `has_non_json_strings`), нативный объект рядом с JSON-строкой (`obj_json_with_native_object`),
+    текст, лишь похожий на JSON — `[TEST]`, `{abc}` (`obj_json_false_alarm`: пути не создаются).
+15. **`_id` в двух формах (только в `obj_bson_id_forms`)**: BSON-обёртка `{"$oid": …}` или строка — два листа `$._id` и
+    `$._id.$oid`, генератор сводит их в одну колонку (`coalesce`).
 
 ## 3. Структура таблиц в Trino
 

@@ -164,6 +164,36 @@ Scopes независимы: строка с новым путём и двумя
 }
 ```
 
+### Trace неоднородной структуры и JSON-строк
+
+`is_polymorphic_structure`, `is_json_string` и `has_non_json_strings` — производные аномалии: они вычисляются при сборке отчёта
+из **типов пути** и в состоянии воркеров не хранятся (как `is_polymorphic_format` из форматов). Их trace собирается из trace по типам
+(`type_trace` в состоянии воркера: «тип → пары», только trace-режим; первое появление типа на пути, как `format_trace` для форматов):
+
+| Аномалия | Источник trace | Элемент |
+|---|---|---|
+| `is_polymorphic_structure` | первые документы каждой формы пути: `SCALAR` (любой скалярный тип), `OBJECT`, `JSON_OBJECT`, `ARRAY` (из записи `P[*]`) | `{id, id_key, form}`; лимит `max_ids` на форму |
+| `is_json_string` | первые документы с JSON-строкой на пути | `{id, id_key}` |
+| `has_non_json_strings` | первые документы с обычной строкой на пути, где есть JSON-строки | `{id, id_key}` |
+
+```json
+"$.counterparties": {
+    "type": "OBJECT",
+    "max_length": 0,
+    "anomalies": {
+        "is_polymorphic_structure": {
+            "detected": true,
+            "trace": [
+                { "id": "60b8d29f1a4c8b0000000000", "id_key": "_id.$oid", "form": "ARRAY" },
+                { "id": "60b8d29f1a4c8b0000000001", "id_key": "_id.$oid", "form": "OBJECT" }
+            ]
+        }
+    }
+}
+```
+
+Merge `type_trace` — тот же bounded min-set, что у остальных scopes.
+
 В обычном режиме (`analyze_json_schema(line)`) `path_trace` и `anomalies[name].trace`
 в отчёте отсутствуют; `anomalies[name]` остаётся `{"detected": true}`.
 

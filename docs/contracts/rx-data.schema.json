@@ -91,6 +91,11 @@
         "format": {
           "$ref": "#/$defs/valueFormat",
           "description": "Только в trace is_polymorphic_format: какое написание дал этот документ."
+        },
+        "form": {
+          "type": "string",
+          "enum": ["SCALAR", "OBJECT", "JSON_OBJECT", "ARRAY"],
+          "description": "Только в trace is_polymorphic_structure: какую форму пути дал этот документ."
         }
       },
       "required": ["id", "id_key"],

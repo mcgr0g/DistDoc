@@ -87,19 +87,37 @@ public class RxDataSchemaTest {
     @Test
     public void testRxDataValidForStructureScenarios() throws Exception {
         ForgottenMigrationsSource source = new ForgottenMigrationsSource();
-        for (AnomalyScenario scenario : List.of(AnomalyScenario.OBJ_NESTED_PLAIN, AnomalyScenario.OBJ_ARRAY_OF_OBJECTS,
-                AnomalyScenario.OBJ_OBJECT_OR_ARRAY, AnomalyScenario.OBJ_OBJECT_OR_SCALAR,
-                AnomalyScenario.OBJ_OBJECT_OR_ARRAY_FORMATS)) {
-            JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
-            for (int i = 0; i < 6; i++) {
-                String json = ChaosDataGenerator.generateSingleLine(source, scenario, i);
-                analyzer.analyze(new ByteArrayInputStream(json.getBytes()));
+        for (AnomalyScenario scenario : AnomalyScenario.values()) {
+            if (!scenario.name().startsWith("OBJ_")) {
+                continue;
             }
-            String report = analyzer.buildJsonReport();
-            assertTrue(report.contains("\"type\":\"OBJECT\""), scenario + ": нет узлов OBJECT");
-            Set<ValidationMessage> errors = validate(report);
-            assertTrue(errors.isEmpty(), scenario + ": rx-data не соответствует контракту 3.0: " + errors);
+            // Обычный и trace-режим: trace is_polymorphic_structure несёт form
+            for (boolean trace : new boolean[]{false, true}) {
+                JsonSchemaAnalyzer analyzer = new JsonSchemaAnalyzer();
+                for (int i = 0; i < 8; i++) {
+                    byte[] json = ChaosDataGenerator.generateSingleLine(source, scenario, i).getBytes();
+                    if (trace) {
+                        analyzer.analyze(new ByteArrayInputStream(json), Slices.utf8Slice(""));
+                    } else {
+                        analyzer.analyze(new ByteArrayInputStream(json));
+                    }
+                }
+                String report = analyzer.buildJsonReport();
+                Set<ValidationMessage> errors = validate(report);
+                assertTrue(errors.isEmpty(), scenario + (trace ? " (trace)" : "") + ": rx-data не соответствует контракту 3.0: " + errors);
+                if (trace && report.contains("is_polymorphic_structure")) {
+                    assertTrue(report.contains("\"form\":"), scenario + ": trace неоднородности без form: " + report);
+                }
+            }
         }
+    }
+
+    @Test
+    public void testSchemaRejectsUnknownForm() throws Exception {
+        String ok = "{\"schema_version\":\"3.0\",\"$.x\":{\"type\":\"OBJECT\",\"max_length\":0,\"anomalies\":"
+                + "{\"is_polymorphic_structure\":{\"detected\":true,\"trace\":[{\"id\":\"1\",\"id_key\":\"id\",\"form\":\"ARRAY\"}]}}}}";
+        assertTrue(validate(ok).isEmpty(), validate(ok).toString());
+        assertFalse(validate(ok.replace("\"ARRAY\"", "\"MAP\"")).isEmpty(), "form вне enum контракта");
     }
 
     @Test
